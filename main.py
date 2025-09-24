@@ -5,18 +5,6 @@ from discord.ext import commands
 from dotenv import load_dotenv
 from pathlib import Path
 
-# --- Pre-run Check ---
-# Check if the '.git' directory exists. This is a simple way to verify
-# that the project is likely running from a cloned repository.
-if not os.path.isdir('.git'):
-    print("="*50)
-    print("ERROR: It looks like you are not running this bot from a cloned Git repository.")
-    print("Please clone the repository from GitHub to ensure all necessary files are present.")
-    print("Git Repo Address: https://github.com/TiltedBl0ck/Tilt-bot")
-    print("="*50)
-    # We exit here to prevent the bot from starting with a broken file structure.
-    exit()
-
 # Load environment variables
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -70,19 +58,19 @@ def init_db():
     cur = conn.cursor()
     cur.execute("""
     CREATE TABLE IF NOT EXISTS guild_config (
-        guild_id                 INTEGER PRIMARY KEY,
-        welcome_channel_id       INTEGER,
-        goodbye_channel_id       INTEGER,
-        stats_category_id        INTEGER,
-        member_count_channel_id  INTEGER,
-        bot_count_channel_id     INTEGER,
-        role_count_channel_id    INTEGER,
-        channel_count_channel_id INTEGER,
-        setup_complete           INTEGER DEFAULT 0,
-        welcome_message          TEXT,
-        welcome_image            TEXT,
-        goodbye_message          TEXT,
-        goodbye_image            TEXT
+        guild_id                  INTEGER PRIMARY KEY,
+        welcome_channel_id        INTEGER,
+        goodbye_channel_id        INTEGER,
+        stats_category_id         INTEGER,
+        member_count_channel_id   INTEGER,
+        bot_count_channel_id      INTEGER,
+        role_count_channel_id     INTEGER,
+        channel_count_channel_id  INTEGER,
+        setup_complete            INTEGER DEFAULT 0,
+        welcome_message           TEXT,
+        welcome_image             TEXT,
+        goodbye_message           TEXT,
+        goodbye_image             TEXT
     )
     """)
     try:
@@ -99,4 +87,3 @@ def init_db():
 if __name__ == "__main__":
     init_db()
     bot.run(BOT_TOKEN)
-
