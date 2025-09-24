@@ -1,100 +1,135 @@
+"""
+Tilt-bot - Main Bot File
+A comprehensive Discord bot with moderation, utility, AI, and management features.
+
+Author: TiltedBl0ck
+Version: 2.0.0
+"""
+
+import asyncio
+import logging
 import os
-import sqlite3
+from pathlib import Path
+from typing import List, Optional
+
 import discord
 from discord.ext import commands
-from dotenv import load_dotenv
-from pathlib import Path
 
-# Load environment variables
-load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN must be set in environment variables")
+# Configure logging for production
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('bot.log'),
+        logging.StreamHandler()
+    ]
+)
 
-# --- Bot Version ---
-# Central location for the bot's version number.
-BOT_VERSION = "v1.1.0"
+logger = logging.getLogger(__name__)
 
-# --- Bot Setup ---
+
 class TiltBot(commands.Bot):
-    def __init__(self):
+    """
+    Enhanced Bot class with improved cog management and error handling.
+    """
+
+    def __init__(self) -> None:
+        """Initialize the bot with proper intents and configuration."""
         intents = discord.Intents.default()
-        intents.members = True
         intents.message_content = True
-        super().__init__(command_prefix="/", intents=intents)
-        
-        # Store the version number on the bot instance so cogs can access it.
-        self.version = BOT_VERSION
+        intents.members = True
 
-    async def setup_hook(self):
-        """This is called when the bot logs in."""
-        print(f"{self.user} is online — loading cogs…")
-        # Use pathlib for a cleaner way to find cogs
-        cogs_dir = Path("./cogs")
-        for entry in cogs_dir.iterdir():
-            # Check if it's a python file and not a special file
-            if entry.is_file() and entry.suffix == ".py" and not entry.name.startswith("_"):
-                try:
-                    await self.load_extension(f'cogs.{entry.stem}')
-                    print(f"Loaded cog: {entry.name}")
-                except Exception as e:
-                    print(f"Failed to load cog {entry.name}: {e}")
-        
-        # Sync commands to Discord
-        await self.tree.sync()
-        print("Slash commands synced globally.")
+        super().__init__(
+            command_prefix='!',  # Fallback prefix, mainly using slash commands
+            intents=intents,
+            help_command=None,  # Disable default help command
+            case_insensitive=True
+        )
 
-    async def on_ready(self):
-        """Event for when the bot is fully ready."""
-        print(f"Bot is ready. Version: {self.version}")
-        # You can set a custom status here if you like
-        await self.change_presence(activity=discord.Game(name="/help for commands"))
+        self.version = "2.0.0"
 
-bot = TiltBot()
+    async def setup_hook(self) -> None:
+        """
+        Setup hook that runs before the bot starts.
+        Load all cogs and sync commands here.
+        """
+        logger.info("Starting bot setup...")
 
-# --- Database Initialization (Synchronous part is okay here) ---
-DB_PATH = Path(__file__).parent / "Database.db"
+        # Load cogs
+        cogs_to_load = [
+            'cogs.help',      # New professional help cog
+            'cogs.moderation', # Moderation commands
+            'cogs.utility',   # Utility commands (without old help command)
+            'cogs.management', # Server management and setup
+            'cogs.gemini',    # AI chat functionality
+        ]
 
-def init_db():
-    """Initializes the database schema if it doesn't exist."""
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    # A single, improved CREATE TABLE statement
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS guild_config (
-        guild_id                  INTEGER PRIMARY KEY,
-        welcome_channel_id        INTEGER,
-        goodbye_channel_id        INTEGER,
-        stats_category_id         INTEGER,
-        member_count_channel_id   INTEGER,
-        bot_count_channel_id      INTEGER,
-        role_count_channel_id     INTEGER,
-        channel_count_channel_id  INTEGER,
-        setup_complete            INTEGER DEFAULT 0,
-        welcome_message           TEXT,
-        welcome_image             TEXT,
-        goodbye_message           TEXT,
-        goodbye_image             TEXT
-    )
-    """)
-    # Check and add columns if they don't exist to prevent errors
-    table_info = cur.execute("PRAGMA table_info(guild_config)").fetchall()
-    column_names = [info[1] for info in table_info]
-    
-    columns_to_add = {
-        "welcome_message": "TEXT",
-        "welcome_image": "TEXT",
-        "goodbye_message": "TEXT",
-        "goodbye_image": "TEXT"
-    }
+        for cog in cogs_to_load:
+            try:
+                await self.load_extension(cog)
+                logger.info(f"Successfully loaded {cog}")
+            except Exception as e:
+                logger.error(f"Failed to load {cog}: {e}")
 
-    for col_name, col_type in columns_to_add.items():
-        if col_name not in column_names:
-            cur.execute(f"ALTER TABLE guild_config ADD COLUMN {col_name} {col_type}")
+        # Sync slash commands
+        try:
+            synced = await self.tree.sync()
+            logger.info(f"Synced {len(synced)} slash commands")
+        except Exception as e:
+            logger.error(f"Failed to sync commands: {e}")
 
-    conn.commit()
-    conn.close()
+    async def on_ready(self) -> None:
+        """Event triggered when the bot is ready."""
+        logger.info(f"{self.user} has connected to Discord!")
+        logger.info(f"Bot is in {len(self.guilds)} guilds")
 
-if __name__ == "__main__":
-    init_db()
-    bot.run(BOT_TOKEN)
+        # Set bot status
+        activity = discord.Activity(
+            type=discord.ActivityType.watching,
+            name=f"{len(self.guilds)} servers | /help"
+        )
+        await self.change_presence(activity=activity)
+
+    async def on_command_error(self, ctx: commands.Context, error: commands.CommandError) -> None:
+        """Global error handler for prefix commands."""
+        logger.error(f"Command error: {error}", exc_info=True)
+
+    async def on_app_command_error(
+        self, 
+        interaction: discord.Interaction, 
+        error: discord.app_commands.AppCommandError
+    ) -> None:
+        """Global error handler for slash commands."""
+        logger.error(f"App command error: {error}", exc_info=True)
+
+        if not interaction.response.is_done():
+            await interaction.response.send_message(
+                "❌ An error occurred while processing this command.",
+                ephemeral=True
+            )
+
+
+async def main() -> None:
+    """Main function to start the bot."""
+    # Load bot token from environment variable
+    token = os.getenv('DISCORD_TOKEN')
+    if not token:
+        logger.critical("DISCORD_TOKEN environment variable not set!")
+        return
+
+    # Create and start bot
+    bot = TiltBot()
+
+    try:
+        await bot.start(token)
+    except KeyboardInterrupt:
+        logger.info("Bot shutdown requested by user")
+    except Exception as e:
+        logger.critical(f"Fatal error: {e}", exc_info=True)
+    finally:
+        await bot.close()
+
+
+if __name__ == '__main__':
+    # Run the bot
+    asyncio.run(main())

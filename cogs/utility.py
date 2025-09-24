@@ -1,138 +1,39 @@
+"""
+Utility Commands Cog for Tilt-bot
+
+This cog provides general utility commands like serverinfo, userinfo, avatar, ping, 
+botinfo, and invite functionality. The help command has been moved to a separate 
+dedicated help cog for better modularity.
+
+Author: TiltedBl0ck
+Version: 2.0.0
+"""
+
 import discord
 from discord import app_commands
 from discord.ext import commands
 from datetime import datetime, timezone
-from .utils.db import get_db_connection
+
 
 class Utility(commands.Cog):
+    """
+    Utility commands cog providing server information, user information, 
+    and bot management utilities.
+    """
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-
-    @app_commands.command(name="help", description="Shows a detailed list of all available commands.")
-    @app_commands.guild_only()
-    async def help(self, interaction: discord.Interaction):
-        """Displays a categorized and detailed list of all available bot commands."""
-        async with await get_db_connection() as conn:
-            async with conn.execute("SELECT * FROM guildconfig WHERE guild_id = ?", (interaction.guild.id,)) as cursor:
-                config = await cursor.fetchone()
-
-        # Determine the status of setup modules for this server
-        welcome_status = "✅ Configured" if config and config["welcome_channel_id"] else "❌ Not Set"
-        goodbye_status = "✅ Configured" if config and config["goodbye_channel_id"] else "❌ Not Set"
-        serverstats_status = "✅ Configured" if config and config["setup_complete"] else "❌ Not Set"
-
-        embed = discord.Embed(
-            title="📚 Tilt-bot Help & Commands",
-            description="Here's a comprehensive list of all available commands and their functions:",
-            color=discord.Color.dark_theme(),
-            timestamp=datetime.now(timezone.utc)
-        )
-
-        # Utility Commands Section
-        utility_commands = """
-**`/help`** - Shows this help menu with all commands
-**`/serverinfo`** - Displays detailed server information and statistics
-**`/userinfo [member]`** - Shows detailed information about a user or yourself
-**`/avatar [member]`** - Displays a user's avatar in full size
-**`/ping`** - Checks the bot's response time and latency
-**`/botinfo`** - Shows statistics and information about Tilt-bot
-**`/invite`** - Get the bot's invite link to add to other servers
-        """
-
-        embed.add_field(
-            name="🛠️ Utility Commands",
-            value=utility_commands.strip(),
-            inline=False
-        )
-
-        # Moderation Commands Section
-        moderation_commands = """
-**`/clear <count>`** - Clear messages (1-100)
-  • Requires **Manage Messages** permission
-  • Deletes specified number of recent messages
-        """
-
-        embed.add_field(
-            name="🛡️ Moderation Commands",
-            value=moderation_commands.strip(),
-            inline=False
-        )
-
-        # Setup Commands Section
-        setup_commands = f"""
-**`/setup welcome <set/unset>`** - Set up welcome messages **({welcome_status})**
-  • Configure automatic welcome messages for new members
-  • Choose or create a dedicated welcome channel
-
-**`/setup goodbye <set/unset>`** - Set up goodbye messages **({goodbye_status})**
-  • Configure automatic goodbye messages when members leave
-  • Choose or create a dedicated goodbye channel
-
-**`/setup serverstats <set/unset>`** - Create server statistics counters **({serverstats_status})**
-  • Automatic member count and bot count channels
-  • Updates every 10 minutes automatically
-        """
-
-        embed.add_field(
-            name="⚙️ Setup Commands",
-            value=setup_commands.strip(),
-            inline=False
-        )
-
-        # Configuration Commands Section
-        config_commands = """
-**`/config welcome <edit/view/delete>`** - Manage welcome message content
-  • Customize welcome message text and images
-  • Use variables: `{user.mention}`, `{user.name}`, `{guild.name}`, `{member.count}`
-
-**`/config goodbye <edit/view/delete>`** - Manage goodbye message content
-  • Customize goodbye message text and images
-  • Use variables: `{user.name}`, `{guild.name}`, `{member.count}`
-
-**`/config serverstats <edit/view/delete>`** - Manage server stats counters
-  • Configure member count and bot count display channels
-        """
-
-        embed.add_field(
-            name="🔧 Configuration Commands",
-            value=config_commands.strip(),
-            inline=False
-        )
-
-        # AI Commands Section (from gemini.py)
-        ai_commands = """
-**`/chat <prompt>`** - Have a conversation with Tilt-bot's AI
-  • Powered by Google Gemini AI
-  • Maintains conversation context per user
-  • Mention the bot in any channel to chat directly
-        """
-
-        embed.add_field(
-            name="🤖 AI Commands",
-            value=ai_commands.strip(),
-            inline=False
-        )
-
-        # Footer with additional information
-        embed.add_field(
-            name="📋 Additional Information",
-            value="• **Required Permissions**: Administrator for setup/config commands\n"
-                  "• **Support**: Contact TiltedBl0ck for assistance\n"
-                  "• **Bot Prefix**: Use `/` for slash commands or mention the bot",
-            inline=False
-        )
-
-        embed.set_footer(text=f"Tilt-bot {self.bot.version} • Use /command for detailed help on specific commands")
-        embed.set_thumbnail(url=self.bot.user.display_avatar.url)
-
-        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="serverinfo", description="Displays detailed information about the current server.")
     @app_commands.guild_only()
     async def serverinfo(self, interaction: discord.Interaction):
         """Provides a comprehensive embed with server details."""
         guild = interaction.guild
-        embed = discord.Embed(title=f"Server Info: {guild.name}", color=discord.Color.blue(), timestamp=datetime.now(timezone.utc))
+        embed = discord.Embed(
+            title=f"Server Info: {guild.name}", 
+            color=discord.Color.blue(), 
+            timestamp=datetime.now(timezone.utc)
+        )
 
         if guild.icon:
             embed.set_thumbnail(url=guild.icon.url)
@@ -145,8 +46,16 @@ class Utility(commands.Cog):
         humans = len([m for m in guild.members if not m.bot])
         bots = len([m for m in guild.members if m.bot])
 
-        embed.add_field(name="Members", value=f"**Total:** {guild.member_count}\n**Humans:** {humans}\n**Bots:** {bots}", inline=True)
-        embed.add_field(name="Channels", value=f"**Text:** {len(guild.text_channels)}\n**Voice:** {len(guild.voice_channels)}", inline=True)
+        embed.add_field(
+            name="Members", 
+            value=f"**Total:** {guild.member_count}\n**Humans:** {humans}\n**Bots:** {bots}", 
+            inline=True
+        )
+        embed.add_field(
+            name="Channels", 
+            value=f"**Text:** {len(guild.text_channels)}\n**Voice:** {len(guild.voice_channels)}", 
+            inline=True
+        )
         embed.add_field(name="Roles", value=len(guild.roles), inline=True)
 
         await interaction.response.send_message(embed=embed)
@@ -155,7 +64,11 @@ class Utility(commands.Cog):
     async def userinfo(self, interaction: discord.Interaction, member: discord.Member = None):
         """Provides a detailed embed on a specified user or the command author."""
         user = member or interaction.user
-        embed = discord.Embed(title=f"User Info: {user.display_name}", color=user.color, timestamp=datetime.now(timezone.utc))
+        embed = discord.Embed(
+            title=f"User Info: {user.display_name}", 
+            color=user.color, 
+            timestamp=datetime.now(timezone.utc)
+        )
         embed.set_thumbnail(url=user.display_avatar.url)
 
         embed.add_field(name="Username", value=f"`{user}`", inline=True)
@@ -190,7 +103,11 @@ class Utility(commands.Cog):
     @app_commands.command(name="botinfo", description="Displays information about Tilt-bot.")
     async def botinfo(self, interaction: discord.Interaction):
         """Shows detailed statistics and information about the bot itself."""
-        embed = discord.Embed(title="Tilt-bot Statistics", color=discord.Color.purple(), timestamp=datetime.now(timezone.utc))
+        embed = discord.Embed(
+            title="Tilt-bot Statistics", 
+            color=discord.Color.purple(), 
+            timestamp=datetime.now(timezone.utc)
+        )
         embed.set_author(name=self.bot.user.name, icon_url=self.bot.user.display_avatar.url)
 
         embed.add_field(name="Version", value=f"`{self.bot.version}`", inline=True)
@@ -210,6 +127,7 @@ class Utility(commands.Cog):
         view = discord.ui.View()
         view.add_item(discord.ui.Button(label="Click to Invite!", style=discord.ButtonStyle.green, url=invite_link))
         await interaction.response.send_message("Use the button below to add me to your server:", view=view, ephemeral=True)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Utility(bot))
