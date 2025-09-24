@@ -9,7 +9,7 @@ Version: 2.0.0
 import asyncio
 import logging
 import os
-import sqlite3
+import aiosqlite  # Use aiosqlite for async database operations
 from pathlib import Path
 
 import discord
@@ -31,46 +31,47 @@ logger = logging.getLogger(__name__)
 # --- Database Initialization ---
 DB_PATH = Path(__file__).parent / "Database.db"
 
-def init_db():
-    """Initializes the database schema if it doesn't exist and adds new columns."""
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    # Create the main guild configuration table if it's not there
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS guild_config (
-        guild_id                  INTEGER PRIMARY KEY,
-        welcome_channel_id        INTEGER,
-        goodbye_channel_id        INTEGER,
-        stats_category_id         INTEGER,
-        member_count_channel_id   INTEGER,
-        bot_count_channel_id      INTEGER,
-        role_count_channel_id     INTEGER,
-        channel_count_channel_id  INTEGER,
-        setup_complete            INTEGER DEFAULT 0,
-        welcome_message           TEXT,
-        welcome_image             TEXT,
-        goodbye_message           TEXT,
-        goodbye_image             TEXT
-    )
-    """)
-    # Check for and add columns if they are missing to prevent errors on update
-    table_info = cur.execute("PRAGMA table_info(guild_config)").fetchall()
-    column_names = [info[1] for info in table_info]
-    
-    columns_to_add = {
-        "welcome_message": "TEXT",
-        "welcome_image": "TEXT",
-        "goodbye_message": "TEXT",
-        "goodbye_image": "TEXT"
-    }
+async def init_db():
+    """Initializes the database schema asynchronously if it doesn't exist and adds new columns."""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        # Create the main guild configuration table if it's not there
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS guild_config (
+            guild_id                  INTEGER PRIMARY KEY,
+            welcome_channel_id        INTEGER,
+            goodbye_channel_id        INTEGER,
+            stats_category_id         INTEGER,
+            member_count_channel_id   INTEGER,
+            bot_count_channel_id      INTEGER,
+            role_count_channel_id     INTEGER,
+            channel_count_channel_id  INTEGER,
+            setup_complete            INTEGER DEFAULT 0,
+            welcome_message           TEXT,
+            welcome_image             TEXT,
+            goodbye_message           TEXT,
+            goodbye_image             TEXT
+        )
+        """)
+        
+        # Check for and add columns if they are missing to prevent errors on update
+        async with conn.execute("PRAGMA table_info(guild_config)") as cursor:
+            table_info = await cursor.fetchall()
+        
+        column_names = [info[1] for info in table_info]
+        
+        columns_to_add = {
+            "welcome_message": "TEXT",
+            "welcome_image": "TEXT",
+            "goodbye_message": "TEXT",
+            "goodbye_image": "TEXT"
+        }
 
-    for col_name, col_type in columns_to_add.items():
-        if col_name not in column_names:
-            logger.info(f"Adding missing column '{col_name}' to guild_config table.")
-            cur.execute(f"ALTER TABLE guild_config ADD COLUMN {col_name} {col_type}")
+        for col_name, col_type in columns_to_add.items():
+            if col_name not in column_names:
+                logger.info(f"Adding missing column '{col_name}' to guild_config table.")
+                await conn.execute(f"ALTER TABLE guild_config ADD COLUMN {col_name} {col_type}")
 
-    conn.commit()
-    conn.close()
+        await conn.commit()
     logger.info("Database initialized successfully.")
 
 # --- Main Bot Class ---
@@ -98,13 +99,14 @@ class TiltBot(commands.Bot):
         """
         logger.info("Starting bot setup...")
 
-        # Load cogs
+        # Load cogs, including the dedicated error handler
         cogs_to_load = [
-            'cogs.help',        # New professional help cog
-            'cogs.moderation',  # Moderation commands
-            'cogs.utility',     # Utility commands (without old help command)
-            'cogs.management',  # Server management and setup
-            'cogs.gemini',      # AI chat functionality
+            'cogs.help',
+            'cogs.moderation',
+            'cogs.utility',
+            'cogs.management',
+            'cogs.gemini',
+            'cogs.error_handler' # Load the dedicated error handler
         ]
 
         for cog in cogs_to_load:
@@ -133,30 +135,11 @@ class TiltBot(commands.Bot):
         )
         await self.change_presence(activity=activity)
 
+    # The on_app_command_error has been removed from here as it's now handled by the ErrorHandler cog.
+    
     async def on_command_error(self, ctx: commands.Context, error: commands.CommandError) -> None:
         """Global error handler for prefix commands."""
         logger.error(f"Command error in '{ctx.command}': {error}", exc_info=True)
-
-    async def on_app_command_error(
-        self, 
-        interaction: discord.Interaction, 
-        error: discord.app_commands.AppCommandError
-    ) -> None:
-        """Global error handler for slash commands."""
-        logger.error(f"App command error in '{interaction.command.name}': {error}", exc_info=True)
-
-        error_message = "❌ An unexpected error occurred while processing this command. The developers have been notified."
-        
-        # Give more specific feedback for common errors
-        if isinstance(error, discord.app_commands.MissingPermissions):
-            error_message = "❌ You don't have the required permissions to use this command."
-        elif isinstance(error, discord.app_commands.CommandOnCooldown):
-            error_message = f"🕒 This command is on cooldown. Please try again in {error.retry_after:.2f} seconds."
-
-        if interaction.response.is_done():
-            await interaction.followup.send(error_message, ephemeral=True)
-        else:
-            await interaction.response.send_message(error_message, ephemeral=True)
 
 
 async def main() -> None:
@@ -164,8 +147,8 @@ async def main() -> None:
     # IMPORTANT: Load environment variables from the .env file
     load_dotenv()
     
-    # Run the database initializer
-    init_db()
+    # Run the async database initializer
+    await init_db()
 
     # Load bot token from environment variable
     token = os.getenv('BOT_TOKEN')

@@ -11,8 +11,8 @@ class HelpDropdown(discord.ui.Select):
             discord.SelectOption(label="Home", description="Return to the main help menu.", emoji="🏠")
         ]
         for cog_name, cog in bot.cogs.items():
-            # Hide cogs that have no visible commands
-            if not hasattr(cog, '__cog_app_commands__') or not cog.__cog_app_commands__:
+            # Hide cogs that have no visible commands or are the error handler
+            if not hasattr(cog, '__cog_app_commands__') or not cog.__cog_app_commands__ or cog_name == "ErrorHandler":
                 continue
             options.append(discord.SelectOption(
                 label=cog_name,
@@ -23,19 +23,22 @@ class HelpDropdown(discord.ui.Select):
         super().__init__(placeholder="Choose a category to see its commands...", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: discord.Interaction):
+        # Defer the interaction to let Discord know we're processing
+        await interaction.response.defer()
+
         # Get the selected cog name
         selected_cog_name = self.values[0]
         
         if selected_cog_name == "Home":
             # Resend the initial home embed
             embed = create_home_embed(self.bot)
-            await interaction.response.edit_message(embed=embed)
+            await interaction.edit_original_response(embed=embed)
             return
             
         # Find the cog object
         cog = self.bot.get_cog(selected_cog_name)
         if not cog:
-            await interaction.response.edit_message(content="Could not find that category.", embed=None)
+            await interaction.edit_original_response(content="Could not find that category.", embed=None)
             return
 
         # Create an embed for the selected category
@@ -50,7 +53,7 @@ class HelpDropdown(discord.ui.Select):
             embed.add_field(name=f"`/{command.name}`", value=command.description or "No description", inline=False)
         
         embed.set_footer(text="Use the dropdown to explore other categories.")
-        await interaction.response.edit_message(embed=embed)
+        await interaction.edit_original_response(embed=embed)
 
 
 class HelpView(discord.ui.View):
@@ -86,9 +89,14 @@ class HelpCog(commands.Cog, name="Help"):
     @app_commands.command(name="help", description="Displays an interactive menu of all available commands.")
     async def help(self, interaction: discord.Interaction):
         """The main help command."""
+        # Defer the response to prevent "Unknown Interaction" errors
+        await interaction.response.defer(ephemeral=True)
+        
         embed = create_home_embed(self.bot)
         view = HelpView(self.bot)
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        
+        # Use followup.send after deferring
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
