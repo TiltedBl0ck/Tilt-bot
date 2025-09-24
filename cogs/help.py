@@ -23,22 +23,21 @@ class HelpDropdown(discord.ui.Select):
         super().__init__(placeholder="Choose a category to see its commands...", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: discord.Interaction):
-        # Defer the interaction to let Discord know we're processing
-        await interaction.response.defer()
-
-        # Get the selected cog name
+        # When a user selects an option, we edit the message directly.
+        # This is the most efficient way to respond to a component interaction.
         selected_cog_name = self.values[0]
         
         if selected_cog_name == "Home":
             # Resend the initial home embed
             embed = create_home_embed(self.bot)
-            await interaction.edit_original_response(embed=embed)
+            await interaction.response.edit_message(embed=embed)
             return
             
         # Find the cog object
         cog = self.bot.get_cog(selected_cog_name)
         if not cog:
-            await interaction.edit_original_response(content="Could not find that category.", embed=None)
+            # Edit the message to show an error if the cog isn't found
+            await interaction.response.edit_message(content="Could not find that category.", embed=None, view=self.view)
             return
 
         # Create an embed for the selected category
@@ -53,7 +52,8 @@ class HelpDropdown(discord.ui.Select):
             embed.add_field(name=f"`/{command.name}`", value=command.description or "No description", inline=False)
         
         embed.set_footer(text="Use the dropdown to explore other categories.")
-        await interaction.edit_original_response(embed=embed)
+        # Edit the original message with the new embed
+        await interaction.response.edit_message(embed=embed)
 
 
 class HelpView(discord.ui.View):
@@ -101,3 +101,4 @@ class HelpCog(commands.Cog, name="Help"):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(HelpCog(bot))
+
