@@ -70,3 +70,28 @@ Traceback (most recent call last):
     raise CommandInvokeError(self, e) from e
 discord.app_commands.errors.CommandInvokeError: Command 'help' raised an exception: NotFound: 404 Not Found (error code: 10062): Unknown interaction
 2025-09-24 16:53:35,465 - [ERROR] - cogs.error_handler: Failed to send error message to user: 404 Not Found (error code: 10062): Unknown interaction
+2025-09-24 16:54:46,183 - [INFO] - __main__: Bot has been shut down.
+2025-09-24 16:58:01,290 - [WARNING] - discord.client: PyNaCl is not installed, voice will NOT be supported
+2025-09-24 16:58:01,291 - [INFO] - discord.client: logging in using static token
+2025-09-24 16:58:05,577 - [INFO] - __main__: --- Starting Bot Setup ---
+2025-09-24 16:58:05,601 - [INFO] - cogs.utils.db: Database has been successfully initialized.
+2025-09-24 16:58:05,613 - [INFO] - cogs.handler: --- Loading Extensions ---
+2025-09-24 16:58:05,615 - [INFO] - cogs.handler: Successfully loaded extension: cogs.commands.avatar
+2025-09-24 16:58:05,615 - [INFO] - cogs.handler: Successfully loaded extension: cogs.commands.botinfo
+2025-09-24 16:58:06,099 - [INFO] - cogs.commands.chat: Gemini AI model has been successfully configured.
+2025-09-24 16:58:06,100 - [INFO] - cogs.handler: Successfully loaded extension: cogs.commands.chat
+2025-09-24 16:58:06,101 - [INFO] - cogs.handler: Successfully loaded extension: cogs.commands.clear
+2025-09-24 16:58:06,102 - [INFO] - cogs.handler: Successfully loaded extension: cogs.commands.config
+2025-09-24 16:58:06,108 - [INFO] - cogs.handler: Successfully loaded extension: cogs.commands.help
+2025-09-24 16:58:06,108 - [INFO] - cogs.handler: Successfully loaded extension: cogs.commands.invite
+2025-09-24 16:58:06,109 - [INFO] - cogs.handler: Successfully loaded extension: cogs.commands.ping
+2025-09-24 16:58:06,111 - [INFO] - cogs.handler: Successfully loaded extension: cogs.commands.serverinfo
+2025-09-24 16:58:06,111 - [INFO] - cogs.handler: Successfully loaded extension: cogs.commands.setup
+2025-09-24 16:58:06,112 - [INFO] - cogs.handler: Successfully loaded extension: cogs.commands.userinfo
+2025-09-24 16:58:06,115 - [INFO] - cogs.handler: Successfully loaded extension: cogs.events.members
+2025-09-24 16:58:06,116 - [INFO] - cogs.handler: Successfully loaded extension: cogs.error_handler
+2025-09-24 16:58:06,575 - [INFO] - __main__: Successfully synced 11 application commands.
+2025-09-24 16:58:10,609 - [INFO] - discord.gateway: Shard ID None has connected to Gateway (Session ID: aa106933a695ed40dbcba9bf6222744a).
+2025-09-24 16:58:12,621 - [INFO] - __main__: Logged in as Tilt-bot#9361 (ID: 1417562386138923270)
+2025-09-24 16:58:12,621 - [INFO] - __main__: Bot version: 2.0.0
+2025-09-24 16:58:12,621 - [INFO] - __main__: Bot is in 1 guilds.

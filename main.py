@@ -5,6 +5,7 @@ A comprehensive Discord bot with moderation, utility, AI, and management feature
 import asyncio
 import logging
 import os
+import json # Import the json module
 from pathlib import Path
 import discord
 from discord.ext import commands
@@ -34,7 +35,15 @@ class TiltBot(commands.Bot):
         intents.members = True
 
         super().__init__(command_prefix='!', intents=intents)
-        self.version = "3.0.0"
+        
+        # Load version from config.json for consistency
+        try:
+            with open('config.json', 'r') as config_file:
+                config = json.load(config_file)
+                self.version = config.get("bot", {}).get("version", "N/A")
+        except (FileNotFoundError, json.JSONDecodeError):
+            self.version = "N/A"
+
 
     async def setup_hook(self) -> None:
         """This hook is called when the bot is setting up."""
@@ -43,7 +52,7 @@ class TiltBot(commands.Bot):
         # Initialize the database before loading cogs
         await init_db()
 
-        # Load the central handler cog
+        # Load the central handler cog, which will then load all other cogs.
         await self.load_extension('cogs.handler')
         
         # Sync application commands
@@ -56,6 +65,7 @@ class TiltBot(commands.Bot):
     async def on_ready(self) -> None:
         """Called when the bot is ready and connected to Discord."""
         logger.info(f'Logged in as {self.user} (ID: {self.user.id})')
+        logger.info(f'Bot version: {self.version}')
         logger.info(f'Bot is in {len(self.guilds)} guilds.')
         await self.change_presence(
             activity=discord.Activity(
@@ -81,7 +91,12 @@ async def main() -> None:
     finally:
         if not bot.is_closed():
             await bot.close()
-        logger.info("Bot has been shut down.")
+        logger.info("Bot has been shut down. Clearing log file for next session.")
+
+        # This will safely close the logging handlers and then clear the file.
+        logging.shutdown()
+        with open('bot.log', 'w') as f:
+            f.truncate(0)
 
 
 if __name__ == '__main__':
