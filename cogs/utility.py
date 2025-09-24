@@ -18,54 +18,50 @@ class Utility(commands.Cog):
             color=discord.Color.blue(),
             timestamp=datetime.now(timezone.utc)
         )
+        embed.set_author(name=self.bot.user.name, icon_url=self.bot.user.display_avatar.url)
         embed.set_thumbnail(url=self.bot.user.display_avatar.url)
         embed.add_field(name="Version", value=f"`{self.bot.version}`", inline=True)
         embed.add_field(name="Developer", value="TiltedBl0ck", inline=True)
         embed.set_footer(text="Thank you for using Tilt-bot!")
         
-        # Add buttons for invite link and support server/GitHub if you have one
         view = discord.ui.View()
         invite_link = f"https://discord.com/oauth2/authorize?client_id={self.bot.user.id}&scope=bot%20applications.commands&permissions=8"
         view.add_item(discord.ui.Button(label="Invite Me!", style=discord.ButtonStyle.green, url=invite_link))
-        # view.add_item(discord.ui.Button(label="Support Server", style=discord.ButtonStyle.secondary, url="YOUR_SUPPORT_SERVER_LINK"))
         
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     @app_commands.command(name="commands", description="Shows a detailed list of all available commands.")
+    @app_commands.guild_only()
     async def commands(self, interaction: discord.Interaction):
         """Displays a categorized and detailed list of all available bot commands."""
-        try:
-            # Asynchronously get the guild's configuration from the database
-            async with await get_db_connection() as conn:
-                async with conn.execute("SELECT * FROM guild_config WHERE guild_id = ?", (interaction.guild.id,)) as cursor:
-                    config = await cursor.fetchone()
+        # This command will now only run in a server, preventing the error.
+        async with await get_db_connection() as conn:
+            async with conn.execute("SELECT * FROM guild_config WHERE guild_id = ?", (interaction.guild.id,)) as cursor:
+                config = await cursor.fetchone()
 
-            # Determine the status of setup modules for this server
-            welcome_status = "✅ Configured" if config and config["welcome_channel_id"] else "❌ Not Set"
-            goodbye_status = "✅ Configured" if config and config["goodbye_channel_id"] else "❌ Not Set"
-            serverstats_status = "✅ Configured" if config and config["setup_complete"] else "❌ Not Set"
+        welcome_status = "✅ Configured" if config and config["welcome_channel_id"] else "❌ Not Set"
+        goodbye_status = "✅ Configured" if config and config["goodbye_channel_id"] else "❌ Not Set"
+        serverstats_status = "✅ Configured" if config and config["setup_complete"] else "❌ Not Set"
 
-            embed = discord.Embed(
-                title="🤖 Tilt-bot Command List",
-                description="Here are all my commands. Status indicators show which setup modules are active on this server.",
-                color=discord.Color.blue(),
-                timestamp=datetime.now(timezone.utc)
-            )
-            embed.set_thumbnail(url=self.bot.user.display_avatar.url)
-            
-            embed.add_field(name="💬 AI Commands", value="`/chat` - Chat with the bot's AI.\n*You can also @mention me to start a conversation!*", inline=False)
-            embed.add_field(name="🛠️ Utility Commands", value="`/help`, `/commands`, `/serverinfo`, `/userinfo`, `/avatar`, `/ping`, `/botinfo`, `/invite`", inline=False)
-            embed.add_field(name="🛡️ Moderation", value="`/clear` - Bulk delete messages.", inline=False)
-            embed.add_field(name="⚙️ Setup Commands", value=f"**Welcome:** {welcome_status} (`/setup welcome`)\n**Goodbye:** {goodbye_status} (`/setup goodbye`)\n**Server Stats:** {serverstats_status} (`/setup serverstats`)", inline=False)
-            embed.add_field(name="🔧 Configuration", value="`/config welcome`\n`/config goodbye`\n`/config serverstats`", inline=False)
-            
-            embed.set_footer(text="Commands requiring admin rights are only visible to authorized users.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-        except Exception as e:
-            print(f"Error in 'commands' command: {e}")
-            await interaction.response.send_message("❌ An error occurred while fetching the command list.", ephemeral=True)
+        embed = discord.Embed(
+            title="Tilt-bot Command List",
+            description="Here are all my commands. Status indicators show which setup modules are active on this server.",
+            color=discord.Color.blue(),
+            timestamp=datetime.now(timezone.utc)
+        )
+        embed.set_author(name=self.bot.user.name, icon_url=self.bot.user.display_avatar.url)
+        
+        embed.add_field(name="💬 AI Commands", value="`/chat` - Chat with the bot's AI.\n*You can also @mention me to start a conversation!*", inline=False)
+        embed.add_field(name="🛠️ Utility Commands", value="`/help`, `/commands`, `/serverinfo`, `/userinfo`, `/avatar`, `/ping`, `/botinfo`, `/invite`", inline=False)
+        embed.add_field(name="🛡️ Moderation", value="`/clear` - Bulk delete messages.", inline=False)
+        embed.add_field(name="⚙️ Setup Commands", value=f"**Welcome:** {welcome_status} (`/setup welcome`)\n**Goodbye:** {goodbye_status} (`/setup goodbye`)\n**Server Stats:** {serverstats_status} (`/setup serverstats`)", inline=False)
+        embed.add_field(name="🔧 Configuration", value="`/config welcome`\n`/config goodbye`\n`/config serverstats`", inline=False)
+        
+        embed.set_footer(text="Commands requiring admin rights are only visible to authorized users.")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="serverinfo", description="Displays detailed information about the current server.")
+    @app_commands.guild_only()
     async def serverinfo(self, interaction: discord.Interaction):
         """Provides a comprehensive embed with server details."""
         guild = interaction.guild
@@ -73,18 +69,20 @@ class Utility(commands.Cog):
         if guild.icon:
             embed.set_thumbnail(url=guild.icon.url)
         
+        embed.set_author(name=self.bot.user.name, icon_url=self.bot.user.display_avatar.url)
         embed.add_field(name="Owner", value=guild.owner.mention, inline=True)
         embed.add_field(name="Server ID", value=f"`{guild.id}`", inline=True)
         embed.add_field(name="Created On", value=f"<t:{int(guild.created_at.timestamp())}:D>", inline=True)
         
-        embed.add_field(name="Members", value=f"**Total:** {guild.member_count}\n**Humans:** {len([m for m in guild.members if not m.bot])}\n**Bots:** {len([m for m in guild.members if m.bot])}", inline=True)
+        humans = len([m for m in guild.members if not m.bot])
+        bots = len([m for m in guild.members if m.bot])
+        embed.add_field(name="Members", value=f"**Total:** {guild.member_count}\n**Humans:** {humans}\n**Bots:** {bots}", inline=True)
         embed.add_field(name="Channels", value=f"**Text:** {len(guild.text_channels)}\n**Voice:** {len(guild.voice_channels)}", inline=True)
         embed.add_field(name="Roles", value=len(guild.roles), inline=True)
 
         await interaction.response.send_message(embed=embed)
             
     @app_commands.command(name="userinfo", description="Displays detailed information about a user.")
-    @app_commands.describe(member="The user you want to get information about.")
     async def userinfo(self, interaction: discord.Interaction, member: discord.Member = None):
         """Provides a detailed embed on a specified user or the command author."""
         user = member or interaction.user
@@ -124,7 +122,7 @@ class Utility(commands.Cog):
     async def botinfo(self, interaction: discord.Interaction):
         """Shows detailed statistics and information about the bot itself."""
         embed = discord.Embed(title="Tilt-bot Statistics", color=discord.Color.purple(), timestamp=datetime.now(timezone.utc))
-        embed.set_thumbnail(url=self.bot.user.display_avatar.url)
+        embed.set_author(name=self.bot.user.name, icon_url=self.bot.user.display_avatar.url)
         
         embed.add_field(name="Version", value=f"`{self.bot.version}`", inline=True)
         embed.add_field(name="Latency", value=f"{round(self.bot.latency*1000)}ms", inline=True)
@@ -146,4 +144,5 @@ class Utility(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Utility(bot))
+
 
