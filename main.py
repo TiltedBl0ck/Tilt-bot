@@ -11,6 +11,10 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN must be set in environment variables")
 
+# --- Bot Version ---
+# Central location for the bot's version number.
+BOT_VERSION = "v1.0.0"
+
 # --- Bot Setup ---
 class TiltBot(commands.Bot):
     def __init__(self):
@@ -18,6 +22,9 @@ class TiltBot(commands.Bot):
         intents.members = True
         intents.message_content = True
         super().__init__(command_prefix="/", intents=intents)
+        
+        # Store the version number on the bot instance so cogs can access it.
+        self.version = BOT_VERSION
 
     async def setup_hook(self):
         """This is called when the bot logs in."""
@@ -37,7 +44,7 @@ class TiltBot(commands.Bot):
 
     async def on_ready(self):
         """Event for when the bot is fully ready."""
-        print("Bot is ready.")
+        print(f"Bot is ready. Version: {self.version}")
         pass
 
 bot = TiltBot()

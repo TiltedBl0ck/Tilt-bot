@@ -4,32 +4,54 @@ from discord.ext import commands
 from datetime import datetime, timezone
 from .utils.db import get_db_connection
 
+# The bot's version number is now stored here in one central place.
+BOT_VERSION = "v1.0.0"
+
 class Utility(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="help", description="Show all available commands")
-    async def help_command(self, interaction: discord.Interaction):
+    @app_commands.command(name="help", description="Shows information about Tilt-bot.")
+    async def help(self, interaction: discord.Interaction):
+        """The new help command that shows bot version and information."""
+        embed = discord.Embed(
+            title="Tilt-bot Information",
+            description="Tilt-bot is an all-in-one utility bot for server moderation, support, and engagement.",
+            color=discord.Color.blue(),
+            timestamp=datetime.now(timezone.utc)
+        )
+        embed.add_field(name="Version", value=BOT_VERSION)
+        embed.set_footer(text="Developed with ❤️")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="commands", description="Show all available commands")
+    async def commands(self, interaction: discord.Interaction):
+        """The old help command, now renamed to /commands."""
         try:
-            conn = get_db_connection()
-            cur = conn.cursor()
-            cur.execute("SELECT * FROM guild_config WHERE guild_id = ?", (interaction.guild.id,))
-            config = cur.fetchone()
-            conn.close()
+            # The 'async with' statement handles opening and closing the database connection.
+            async with await get_db_connection() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute("SELECT * FROM guild_config WHERE guild_id = ?", (interaction.guild.id,))
+                    config = await cur.fetchone()
 
             welcome_status = "✅" if config and config["welcome_channel_id"] else "❌"
             goodbye_status = "✅" if config and config["goodbye_channel_id"] else "❌"
             serverstats_status = "✅" if config and config["setup_complete"] else "❌"
 
             embed = discord.Embed(
-                title="🤖 Tilt-bot Help",
+                title="🤖 Tilt-bot Commands",
                 description="Here are the commands you can use:",
                 color=discord.Color.blue(),
                 timestamp=datetime.now(timezone.utc)
             )
             embed.add_field(
+                name="💬 AI Commands",
+                value="`/chat` - Have a conversation with the bot's AI.\n*You can also just @mention the bot!*",
+                inline=False
+            )
+            embed.add_field(
                 name="📊 Utility Commands",
-                value="`/help` `/serverinfo` `/userinfo` `/roleinfo` `/avatar` `/membercount` `/ping` `/botinfo` `/emojis` `/invite`",
+                value="`/help` `/commands` `/serverinfo` `/userinfo` `/roleinfo` `/avatar` `/membercount` `/ping` `/botinfo` `/emojis` `/invite`",
                 inline=False
             )
             embed.add_field(

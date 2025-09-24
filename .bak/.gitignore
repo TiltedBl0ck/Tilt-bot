@@ -1,0 +1,11 @@
+# Ignore the file containing secret tokens.
+.env
+
+# Ignore the database file. It should not be on GitHub.
+tilt_bot.db
+
+# Ignore log files.
+logs/
+
+# Ignore Python's cache files.
+__pycache__/
