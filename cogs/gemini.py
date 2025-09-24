@@ -20,8 +20,11 @@ try:
         {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
         {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
     ]
+    
+    # --- THIS IS THE LINE WE CHANGED ---
+    # We are now using the latest recommended model, gemini-1.5-flash-latest.
     model = genai.GenerativeModel(
-        model_name="gemini-1.0-pro",
+        model_name="gemini-1.5-flash-latest",
         generation_config=generation_config,
         safety_settings=safety_settings
     )
