@@ -5,6 +5,18 @@ from discord.ext import commands
 from dotenv import load_dotenv
 from pathlib import Path
 
+# --- Pre-run Check ---
+# Check if the '.git' directory exists. This is a simple way to verify
+# that the project is likely running from a cloned repository.
+if not os.path.isdir('.git'):
+    print("="*50)
+    print("ERROR: It looks like you are not running this bot from a cloned Git repository.")
+    print("Please clone the repository from GitHub to ensure all necessary files are present.")
+    print("Git Repo Address: https://github.com/TiltedBl0ck/Tilt-bot")
+    print("="*50)
+    # We exit here to prevent the bot from starting with a broken file structure.
+    exit()
+
 # Load environment variables
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -79,6 +91,7 @@ def init_db():
         cur.execute("ALTER TABLE guild_config ADD COLUMN goodbye_message TEXT")
         cur.execute("ALTER TABLE guild_config ADD COLUMN goodbye_image TEXT")
     except sqlite3.OperationalError:
+        # This will fail if the columns already exist, which is fine.
         pass
     conn.commit()
     conn.close()
