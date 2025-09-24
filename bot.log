@@ -234,3 +234,105 @@ discord.errors.NotFound: 404 Not Found (error code: 10062): Unknown interaction
 2025-09-24 14:32:20,896 - __main__ - INFO - Tilt-bot#9361 has connected to Discord!
 2025-09-24 14:32:20,896 - __main__ - INFO - Bot is in 1 guilds
 2025-09-24 14:32:47,100 - __main__ - INFO - Bot has been shut down.
+2025-09-24 15:32:02,893 - __main__ - INFO - Database initialized successfully.
+2025-09-24 15:32:02,893 - discord.client - WARNING - PyNaCl is not installed, voice will NOT be supported
+2025-09-24 15:32:02,893 - discord.client - INFO - logging in using static token
+2025-09-24 15:32:07,179 - __main__ - INFO - Starting bot setup...
+2025-09-24 15:32:07,190 - __main__ - INFO - Successfully loaded cogs.help
+2025-09-24 15:32:07,191 - __main__ - INFO - Successfully loaded cogs.moderation
+2025-09-24 15:32:07,199 - __main__ - INFO - Successfully loaded cogs.utility
+2025-09-24 15:32:07,217 - __main__ - INFO - Successfully loaded cogs.management
+2025-09-24 15:32:12,005 - cogs.gemini - INFO - Gemini model configured successfully.
+2025-09-24 15:32:12,006 - __main__ - INFO - Successfully loaded cogs.gemini
+2025-09-24 15:32:12,007 - __main__ - INFO - Successfully loaded cogs.error_handler
+2025-09-24 15:32:12,395 - __main__ - INFO - Synced 11 slash commands
+2025-09-24 15:32:16,446 - discord.gateway - INFO - Shard ID None has connected to Gateway (Session ID: 85156b6cf6ddaa19a071755f9f491955).
+2025-09-24 15:32:18,462 - __main__ - INFO - Tilt-bot#9361 has connected to Discord!
+2025-09-24 15:32:18,462 - __main__ - INFO - Bot is in 1 guilds
+2025-09-24 15:35:07,906 - cogs.error_handler - ERROR - Error in command 'help': Command 'help' raised an exception: NotFound: 404 Not Found (error code: 10062): Unknown interaction
+Traceback (most recent call last):
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\app_commands\commands.py", line 858, in _do_call
+    return await self._callback(self.binding, interaction, **params)  # type: ignore
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "Z:\#Files\Desktop\Tilt-bot-main\cogs\help.py", line 15, in help
+    await interaction.response.defer(ephemeral=True)
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\interactions.py", line 858, in defer
+    response = await adapter.create_interaction_response(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\webhook\async_.py", line 224, in request
+    raise NotFound(response, data)
+discord.errors.NotFound: 404 Not Found (error code: 10062): Unknown interaction
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\app_commands\tree.py", line 1297, in _call
+    await command._invoke_with_namespace(interaction, namespace)
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\app_commands\commands.py", line 884, in _invoke_with_namespace
+    return await self._do_call(interaction, transformed_values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\app_commands\commands.py", line 877, in _do_call
+    raise CommandInvokeError(self, e) from e
+discord.app_commands.errors.CommandInvokeError: Command 'help' raised an exception: NotFound: 404 Not Found (error code: 10062): Unknown interaction
+2025-09-24 15:35:08,174 - cogs.error_handler - ERROR - Failed to send error message to user: 404 Not Found (error code: 10062): Unknown interaction
+2025-09-24 15:37:18,011 - __main__ - INFO - Bot has been shut down.
+2025-09-24 15:37:19,933 - __main__ - INFO - Database initialized successfully.
+2025-09-24 15:37:19,934 - discord.client - WARNING - PyNaCl is not installed, voice will NOT be supported
+2025-09-24 15:37:19,934 - discord.client - INFO - logging in using static token
+2025-09-24 15:37:24,200 - __main__ - INFO - Starting bot setup...
+2025-09-24 15:37:24,247 - __main__ - INFO - Successfully loaded cogs.help
+2025-09-24 15:37:24,248 - __main__ - INFO - Successfully loaded cogs.moderation
+2025-09-24 15:37:24,249 - __main__ - INFO - Successfully loaded cogs.utility
+2025-09-24 15:37:24,252 - __main__ - INFO - Successfully loaded cogs.management
+2025-09-24 15:37:24,728 - cogs.gemini - INFO - Gemini model configured successfully.
+2025-09-24 15:37:24,729 - __main__ - INFO - Successfully loaded cogs.gemini
+2025-09-24 15:37:24,730 - __main__ - INFO - Successfully loaded cogs.error_handler
+2025-09-24 15:37:25,288 - __main__ - INFO - Synced 11 slash commands
+2025-09-24 15:37:29,445 - discord.gateway - INFO - Shard ID None has connected to Gateway (Session ID: 3f5b4cec7aed0a8f2c6462d609320fe8).
+2025-09-24 15:37:31,474 - __main__ - INFO - Tilt-bot#9361 has connected to Discord!
+2025-09-24 15:37:31,474 - __main__ - INFO - Bot is in 1 guilds
+2025-09-24 15:39:01,472 - cogs.error_handler - ERROR - Error in command 'help': Command 'help' raised an exception: NotFound: 404 Not Found (error code: 10062): Unknown interaction
+Traceback (most recent call last):
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\app_commands\commands.py", line 858, in _do_call
+    return await self._callback(self.binding, interaction, **params)  # type: ignore
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "Z:\#Files\Desktop\Tilt-bot-main\cogs\help.py", line 51, in help
+    await interaction.response.defer(ephemeral=True)
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\interactions.py", line 858, in defer
+    response = await adapter.create_interaction_response(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\webhook\async_.py", line 224, in request
+    raise NotFound(response, data)
+discord.errors.NotFound: 404 Not Found (error code: 10062): Unknown interaction
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\app_commands\tree.py", line 1297, in _call
+    await command._invoke_with_namespace(interaction, namespace)
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\app_commands\commands.py", line 884, in _invoke_with_namespace
+    return await self._do_call(interaction, transformed_values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\app_commands\commands.py", line 877, in _do_call
+    raise CommandInvokeError(self, e) from e
+discord.app_commands.errors.CommandInvokeError: Command 'help' raised an exception: NotFound: 404 Not Found (error code: 10062): Unknown interaction
+2025-09-24 15:39:01,774 - cogs.error_handler - ERROR - Failed to send error message to user: 404 Not Found (error code: 10062): Unknown interaction
+2025-09-24 15:41:26,869 - __main__ - INFO - Bot has been shut down.
+2025-09-24 15:41:59,035 - __main__ - INFO - Database initialized successfully.
+2025-09-24 15:41:59,035 - discord.client - WARNING - PyNaCl is not installed, voice will NOT be supported
+2025-09-24 15:41:59,036 - discord.client - INFO - logging in using static token
+2025-09-24 15:42:07,203 - __main__ - INFO - Database initialized successfully.
+2025-09-24 15:42:07,203 - discord.client - WARNING - PyNaCl is not installed, voice will NOT be supported
+2025-09-24 15:42:07,203 - discord.client - INFO - logging in using static token
+2025-09-24 15:42:07,896 - __main__ - INFO - Starting bot setup...
+2025-09-24 15:42:07,919 - __main__ - INFO - Successfully loaded cogs.help
+2025-09-24 15:42:07,920 - __main__ - INFO - Successfully loaded cogs.moderation
+2025-09-24 15:42:07,921 - __main__ - INFO - Successfully loaded cogs.utility
+2025-09-24 15:42:07,924 - __main__ - INFO - Successfully loaded cogs.management
+2025-09-24 15:42:08,407 - cogs.gemini - INFO - Gemini model configured successfully.
+2025-09-24 15:42:08,407 - __main__ - INFO - Successfully loaded cogs.gemini
+2025-09-24 15:42:08,408 - __main__ - INFO - Successfully loaded cogs.error_handler
+2025-09-24 15:42:08,830 - __main__ - INFO - Synced 11 slash commands
+2025-09-24 15:42:12,812 - discord.gateway - INFO - Shard ID None has connected to Gateway (Session ID: 5cb174188cb23fc2879dbb69029d28ca).
+2025-09-24 15:42:14,856 - __main__ - INFO - Tilt-bot#9361 has connected to Discord!
+2025-09-24 15:42:14,856 - __main__ - INFO - Bot is in 1 guilds

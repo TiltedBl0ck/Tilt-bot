@@ -8,13 +8,8 @@ class HelpCog(commands.Cog, name="Help"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="help", description="Displays a list of all available commands.")
-    async def help(self, interaction: discord.Interaction):
-        """The main help command, now showing all commands in one embed."""
-        # Defer the response to prevent timeouts
-        await interaction.response.defer(ephemeral=True)
-
-        # Create the main embed
+    def build_help_embed(self) -> discord.Embed:
+        """Creates the help embed with all commands."""
         embed = discord.Embed(
             title="Tilt-Bot Help Menu",
             description="Here is a list of all available commands, sorted by category.",
@@ -26,7 +21,7 @@ class HelpCog(commands.Cog, name="Help"):
 
         # Iterate through cogs and add their commands to the embed
         for cog_name, cog in self.bot.cogs.items():
-            # Skip cogs that shouldn't be in the help menu (like this one or the error handler)
+            # Skip cogs that shouldn't be in the help menu
             if cog_name in ["Help", "ErrorHandler"] or not hasattr(cog, 'get_app_commands'):
                 continue
 
@@ -43,8 +38,22 @@ class HelpCog(commands.Cog, name="Help"):
                     value="\n".join(commands_list),
                     inline=False
                 )
+        return embed
 
-        # Send the complete embed
+    @app_commands.command(name="help", description="Displays a list of all available commands.")
+    async def help(self, interaction: discord.Interaction):
+        """
+        The main help command. It defers the response immediately to prevent timeouts,
+        then builds and sends the complete command list.
+        """
+        # Defer the response immediately. This tells Discord "I got the command, I'm working on it."
+        # This is crucial for preventing the "Unknown Interaction" error.
+        await interaction.response.defer(ephemeral=True)
+
+        # Build the embed using the helper function
+        embed = self.build_help_embed()
+
+        # Send the complete embed as a follow-up message
         await interaction.followup.send(embed=embed, ephemeral=True)
 
 async def setup(bot: commands.Bot):
