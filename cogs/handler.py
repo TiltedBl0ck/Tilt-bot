@@ -1,5 +1,6 @@
 import os
 import logging
+import asyncio # BUG FIX: Added missing import for asyncio
 from discord.ext import commands
 
 logger = logging.getLogger(__name__)
@@ -7,7 +8,7 @@ logger = logging.getLogger(__name__)
 class CommandHandler(commands.Cog):
     """
     This cog uses a special event `cog_load` to asynchronously load all extensions
-    from the commands, events, and utils directories.
+    from the commands and events directories.
     """
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -19,17 +20,26 @@ class CommandHandler(commands.Cog):
         bot proceeds with syncing commands.
         """
         logger.info("--- Loading Extensions ---")
-        cog_dirs = ["commands", "events", "utils"]
+        # Add 'error_handler' to the list of directories to load from.
+        cog_dirs = ["commands", "events", "error_handler"] 
 
         for cog_dir in cog_dirs:
-            path = f"cogs/{cog_dir}"
-            for filename in os.listdir(path):
+            # Adjust path for single files like error_handler
+            if os.path.isfile(f"cogs/{cog_dir}.py"):
+                 path_entries = [f"{cog_dir}.py"]
+                 path = "cogs"
+            else:
+                 path_entries = os.listdir(f"cogs/{cog_dir}")
+                 path = f"cogs/{cog_dir}"
+            
+            for filename in path_entries:
                 if filename.endswith(".py") and not filename.startswith("__"):
-                    # db.py is a utility, not a cog, so we skip it
-                    if filename == "db.py":
-                        continue
-                        
-                    extension_name = f"cogs.{cog_dir}.{filename[:-3]}"
+                    # Determine the full extension path
+                    if cog_dir == "error_handler":
+                        extension_name = f"cogs.{filename[:-3]}"
+                    else:
+                        extension_name = f"cogs.{cog_dir}.{filename[:-3]}"
+
                     try:
                         await self.bot.load_extension(extension_name)
                         logger.info(f"Successfully loaded extension: {extension_name}")
