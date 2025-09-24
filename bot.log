@@ -1,1 +1,47 @@
 2025-09-24 13:37:50,004 - __main__ - CRITICAL - DISCORD_TOKEN environment variable not set!
+2025-09-24 13:39:32,293 - __main__ - CRITICAL - DISCORD_TOKEN environment variable not set!
+2025-09-24 13:40:15,020 - __main__ - CRITICAL - DISCORD_TOKEN environment variable not set!
+2025-09-24 13:41:00,163 - __main__ - CRITICAL - BOT_TOKEN environment variable not set!
+2025-09-24 13:42:45,251 - __main__ - CRITICAL - BOT_TOKEN environment variable not set!
+2025-09-24 13:43:39,375 - __main__ - INFO - Database initialized successfully.
+2025-09-24 13:43:39,375 - discord.client - WARNING - PyNaCl is not installed, voice will NOT be supported
+2025-09-24 13:43:39,376 - discord.client - INFO - logging in using static token
+2025-09-24 13:43:43,691 - __main__ - INFO - Starting bot setup...
+2025-09-24 13:43:43,745 - __main__ - INFO - Successfully loaded cogs.help
+2025-09-24 13:43:43,755 - __main__ - INFO - Successfully loaded cogs.moderation
+2025-09-24 13:43:43,759 - __main__ - INFO - Successfully loaded cogs.utility
+2025-09-24 13:43:43,879 - __main__ - INFO - Successfully loaded cogs.management
+2025-09-24 13:43:47,963 - cogs.gemini - INFO - Gemini model configured successfully.
+2025-09-24 13:43:47,963 - __main__ - INFO - Successfully loaded cogs.gemini
+2025-09-24 13:43:48,376 - __main__ - INFO - Synced 11 slash commands
+2025-09-24 13:43:52,615 - discord.gateway - INFO - Shard ID None has connected to Gateway (Session ID: da0523632786bc0143d0e47ef9897696).
+2025-09-24 13:43:54,627 - __main__ - INFO - Tilt-bot#9361 has connected to Discord!
+2025-09-24 13:43:54,627 - __main__ - INFO - Bot is in 1 guilds
+2025-09-24 13:43:54,628 - cogs.management - ERROR - Error in update_server_stats: threads can only be started once
+2025-09-24 13:44:17,063 - discord.app_commands.tree - ERROR - Ignoring exception in command 'help'
+Traceback (most recent call last):
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\app_commands\commands.py", line 858, in _do_call
+    return await self._callback(self.binding, interaction, **params)  # type: ignore
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "Z:\#Files\Desktop\Tilt-bot-main\cogs\help.py", line 91, in help
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\interactions.py", line 1051, in send_message
+    response = await adapter.create_interaction_response(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\webhook\async_.py", line 224, in request
+    raise NotFound(response, data)
+discord.errors.NotFound: 404 Not Found (error code: 10062): Unknown interaction
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\app_commands\tree.py", line 1297, in _call
+    await command._invoke_with_namespace(interaction, namespace)
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\app_commands\commands.py", line 884, in _invoke_with_namespace
+    return await self._do_call(interaction, transformed_values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\app_commands\commands.py", line 877, in _do_call
+    raise CommandInvokeError(self, e) from e
+discord.app_commands.errors.CommandInvokeError: Command 'help' raised an exception: NotFound: 404 Not Found (error code: 10062): Unknown interaction
+2025-09-24 13:44:57,874 - cogs.gemini - INFO - AI mention response sent to tiltedblock in TiltedBlock HQ
+2025-09-24 13:45:14,380 - cogs.moderation - INFO - User tiltedblock cleared 3 messages in TiltedBlock HQ
