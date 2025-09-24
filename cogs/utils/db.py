@@ -16,7 +16,11 @@ async def init_db():
             welcome_message           TEXT,
             welcome_image             TEXT,
             goodbye_message           TEXT,
-            goodbye_image             TEXT
+            goodbye_image             TEXT,
+            stats_category_id         INTEGER,
+            member_count_channel_id   INTEGER,
+            bot_count_channel_id      INTEGER,
+            role_count_channel_id     INTEGER
         )
         """)
         await conn.commit()

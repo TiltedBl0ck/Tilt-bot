@@ -2,17 +2,18 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from datetime import datetime
+from cogs.utils.db import get_db_connection
+import logging
+
+logger = logging.getLogger(__name__)
 
 class HelpCommand(commands.Cog):
     """A command to display all available bot commands."""
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="help", description="Displays a list of all available commands.")
-    async def help(self, interaction: discord.Interaction):
-        """Builds and sends an embed with all commands, sorted by cog."""
-        await interaction.response.defer(ephemeral=True)
-        
+    async def build_help_embed(self, interaction: discord.Interaction) -> discord.Embed:
+        """Builds and returns the help embed with command statuses."""
         embed = discord.Embed(
             title="Tilt-Bot Help Menu",
             description="Here is a list of all available commands:",
@@ -22,33 +23,68 @@ class HelpCommand(commands.Cog):
         if self.bot.user.display_avatar:
             embed.set_thumbnail(url=self.bot.user.display_avatar.url)
 
-        # A dictionary to hold commands sorted by their cog name
-        cogs_with_commands = {}
+        # Get the current server's configuration for status checks
+        conn = await get_db_connection()
+        try:
+            cursor = await conn.execute("SELECT * FROM guild_config WHERE guild_id = ?", (interaction.guild_id,))
+            config = await cursor.fetchone()
+        finally:
+            if conn:
+                await conn.close()
 
+        # Determine status for setup commands
+        welcome_status = "✅" if config and config["welcome_channel_id"] else "❌"
+        goodbye_status = "✅" if config and config["goodbye_channel_id"] else "❌"
+        serverstats_status = "✅" if config and config["stats_category_id"] else "❌"
+
+        cogs_with_commands = {}
         for name, cog in self.bot.cogs.items():
-            # Skip utility cogs
-            if name in ["CommandHandler", "MemberEvents", "ErrorHandler"]:
+            if name in ["CommandHandler", "MemberEvents", "ErrorHandler", "HelpCommand"]:
                 continue
             
-            # Get only slash commands from the cog
             app_commands_in_cog = cog.get_app_commands()
             if app_commands_in_cog:
-                # Add cog and its commands to dictionary
                 cogs_with_commands[name] = app_commands_in_cog
 
-        # Add a field for each cog
         for name, command_list in cogs_with_commands.items():
             command_text = []
             for cmd in command_list:
                 if isinstance(cmd, app_commands.Group):
-                    sub_cmds = "\n".join([f"  `└ {sub.name}` - {sub.description}" for sub in cmd.commands])
-                    command_text.append(f"`/{cmd.name}` - {cmd.description}\n{sub_cmds}")
+                    sub_cmds_text = []
+                    for sub in cmd.commands:
+                        # Add status indicators for specific setup commands
+                        if cmd.name == "setup":
+                            if sub.name == "welcome":
+                                sub_cmds_text.append(f"  `└ {sub.name}` {welcome_status} - {sub.description}")
+                            elif sub.name == "goodbye":
+                                sub_cmds_text.append(f"  `└ {sub.name}` {goodbye_status} - {sub.description}")
+                            elif sub.name == "serverstats":
+                                sub_cmds_text.append(f"  `└ {sub.name}` {serverstats_status} - {sub.description}")
+                            else:
+                                sub_cmds_text.append(f"  `└ {sub.name}` - {sub.description}")
+                        else:
+                            sub_cmds_text.append(f"  `└ {sub.name}` - {sub.description}")
+                    
+                    sub_cmds_str = "\n".join(sub_cmds_text)
+                    command_text.append(f"`/{cmd.name}` - {cmd.description}\n{sub_cmds_str}")
                 else:
                     command_text.append(f"`/{cmd.name}` - {cmd.description}")
             
             embed.add_field(name=f"**{name}**", value="\n".join(command_text), inline=False)
         
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        return embed
+
+    @app_commands.command(name="help", description="Displays a list of all available commands.")
+    async def help(self, interaction: discord.Interaction):
+        """Builds and sends an embed with all commands, sorted by cog."""
+        await interaction.response.defer(ephemeral=True)
+        
+        try:
+            embed = await self.build_help_embed(interaction)
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        except Exception as e:
+            logger.error(f"Error building help command: {e}", exc_info=True)
+            await interaction.followup.send("❌ An error occurred while building the help message.", ephemeral=True)
 
 async def setup(bot: commands.Bot):
     """The setup function to add this cog to the bot."""
