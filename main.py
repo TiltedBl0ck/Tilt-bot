@@ -13,7 +13,7 @@ if not BOT_TOKEN:
 
 # --- Bot Version ---
 # Central location for the bot's version number.
-BOT_VERSION = "v1.0.0"
+BOT_VERSION = "v1.1.0"
 
 # --- Bot Setup ---
 class TiltBot(commands.Bot):
@@ -29,14 +29,16 @@ class TiltBot(commands.Bot):
     async def setup_hook(self):
         """This is called when the bot logs in."""
         print(f"{self.user} is online — loading cogs…")
-        # Load cogs
-        for filename in os.listdir('./cogs'):
-            if filename.endswith('.py'):
+        # Use pathlib for a cleaner way to find cogs
+        cogs_dir = Path("./cogs")
+        for entry in cogs_dir.iterdir():
+            # Check if it's a python file and not a special file
+            if entry.is_file() and entry.suffix == ".py" and not entry.name.startswith("_"):
                 try:
-                    await self.load_extension(f'cogs.{filename[:-3]}')
-                    print(f"Loaded cog: {filename}")
+                    await self.load_extension(f'cogs.{entry.stem}')
+                    print(f"Loaded cog: {entry.name}")
                 except Exception as e:
-                    print(f"Failed to load cog {filename}: {e}")
+                    print(f"Failed to load cog {entry.name}: {e}")
         
         # Sync commands to Discord
         await self.tree.sync()
@@ -45,17 +47,19 @@ class TiltBot(commands.Bot):
     async def on_ready(self):
         """Event for when the bot is fully ready."""
         print(f"Bot is ready. Version: {self.version}")
-        pass
+        # You can set a custom status here if you like
+        await self.change_presence(activity=discord.Game(name="/help for commands"))
 
 bot = TiltBot()
 
-# --- Database Initialization ---
+# --- Database Initialization (Synchronous part is okay here) ---
 DB_PATH = Path(__file__).parent / "Database.db"
 
 def init_db():
-    """Initializes the database schema."""
+    """Initializes the database schema if it doesn't exist."""
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
+    # A single, improved CREATE TABLE statement
     cur.execute("""
     CREATE TABLE IF NOT EXISTS guild_config (
         guild_id                  INTEGER PRIMARY KEY,
@@ -73,14 +77,21 @@ def init_db():
         goodbye_image             TEXT
     )
     """)
-    try:
-        cur.execute("ALTER TABLE guild_config ADD COLUMN welcome_message TEXT")
-        cur.execute("ALTER TABLE guild_config ADD COLUMN welcome_image TEXT")
-        cur.execute("ALTER TABLE guild_config ADD COLUMN goodbye_message TEXT")
-        cur.execute("ALTER TABLE guild_config ADD COLUMN goodbye_image TEXT")
-    except sqlite3.OperationalError:
-        # This will fail if the columns already exist, which is fine.
-        pass
+    # Check and add columns if they don't exist to prevent errors
+    table_info = cur.execute("PRAGMA table_info(guild_config)").fetchall()
+    column_names = [info[1] for info in table_info]
+    
+    columns_to_add = {
+        "welcome_message": "TEXT",
+        "welcome_image": "TEXT",
+        "goodbye_message": "TEXT",
+        "goodbye_image": "TEXT"
+    }
+
+    for col_name, col_type in columns_to_add.items():
+        if col_name not in column_names:
+            cur.execute(f"ALTER TABLE guild_config ADD COLUMN {col_name} {col_type}")
+
     conn.commit()
     conn.close()
 
