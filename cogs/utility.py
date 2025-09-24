@@ -4,9 +4,6 @@ from discord.ext import commands
 from datetime import datetime, timezone
 from .utils.db import get_db_connection
 
-# The bot's version number is now stored here in one central place.
-BOT_VERSION = "v1.0.0"
-
 class Utility(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -20,7 +17,8 @@ class Utility(commands.Cog):
             color=discord.Color.blue(),
             timestamp=datetime.now(timezone.utc)
         )
-        embed.add_field(name="Version", value=BOT_VERSION)
+        # We now access the version directly from the bot instance.
+        embed.add_field(name="Version", value=self.bot.version)
         embed.set_footer(text="Developed with ❤️")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -28,11 +26,14 @@ class Utility(commands.Cog):
     async def commands(self, interaction: discord.Interaction):
         """The old help command, now renamed to /commands."""
         try:
+            config = None
+            # --- THIS IS THE CORRECTED CODE ---
             # The 'async with' statement handles opening and closing the database connection.
             async with await get_db_connection() as conn:
-                async with conn.cursor() as cur:
-                    await cur.execute("SELECT * FROM guild_config WHERE guild_id = ?", (interaction.guild.id,))
-                    config = await cur.fetchone()
+                # We use 'await conn.execute' to run the query asynchronously.
+                async with conn.execute("SELECT * FROM guild_config WHERE guild_id = ?", (interaction.guild.id,)) as cursor:
+                    # We use 'await cursor.fetchone()' to get the result.
+                    config = await cursor.fetchone()
 
             welcome_status = "✅" if config and config["welcome_channel_id"] else "❌"
             goodbye_status = "✅" if config and config["goodbye_channel_id"] else "❌"
@@ -75,8 +76,8 @@ class Utility(commands.Cog):
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
         except Exception as e:
-            print(f"Error in help command: {e}")
-            await interaction.response.send_message("❌ Error displaying help menu.", ephemeral=True)
+            print(f"Error in 'commands' command: {e}")
+            await interaction.response.send_message("❌ Error displaying the commands list.", ephemeral=True)
 
     @app_commands.command(name="serverinfo", description="View server information")
     async def serverinfo(self, interaction: discord.Interaction):
@@ -190,7 +191,7 @@ class Utility(commands.Cog):
     @app_commands.command(name="invite", description="Get bot invite link")
     async def invite(self, interaction: discord.Interaction):
         try:
-            link = f"https://discord.com/oauth2/authorize?client_id={self.bot.user.id}&scope=bot%20applications.commands&permissions=268438528"
+            link = f"https://discord.com/oauth2/authorize?client_id={self.bot.user.id}&scope=bot%20applications.commands&permissions=8"
             await interaction.response.send_message(f"Invite me: {link}")
         except Exception:
             await interaction.response.send_message("❌ Error generating invite link.", ephemeral=True)
