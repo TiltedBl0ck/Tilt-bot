@@ -1,99 +1,87 @@
+Tilt-Bot v2.0.0
+Tilt-Bot is a modern, feature-rich, and easy-to-use Discord bot built with the latest discord.py library. It leverages slash commands and an interactive UI for a seamless user experience.
 
-# Discord Bot
+✨ Features
+🤖 AI Chat: Have a conversation with the bot using Google's Gemini AI. Just mention the bot or use the /chat command.
 
-A Discord bot built with discord.py that supports slash commands, background tasks, and PostgreSQL database persistence.
+👋 Welcome & Goodbye: Automatically greet new members and say goodbye to those who leave with customizable messages and images.
 
-## Features
+📊 Server Stats: Set up voice channels that automatically display your server's member and bot counts.
 
-- Slash command `/ping` to check bot latency.
-- Hourly background task logging bot status and guild count.
-- PostgreSQL database initialization and guild configuration storage.
-- Secure environment variable management for tokens and database URL.
+🛠️ Utility Commands: A full suite of tools to manage your server and get information, including /serverinfo, /userinfo, /avatar, and more.
 
-## Prerequisites
+🛡️ Moderation: Simple and effective moderation tools, like /clear to bulk-delete messages.
 
-- Python 3.10 or higher
-- PostgreSQL database instance
-- Discord bot application with a token
-- `main.py` and `requirements.txt` in the project root
+⚙️ Interactive Setup: Easy-to-use menus, dropdowns, and pop-up forms for configuring the bot without needing to remember complex commands.
 
-## Installation
+📚 Modern Help Command: A new, interactive help menu with dropdowns to easily browse command categories.
 
-1. Clone the repository or download the files.
-2. Create and activate a Python virtual environment:
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
-3. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+🚀 Getting Started
+Prerequisites
+Python 3.10 or higher
 
-## Configuration
+A Discord Bot Token
 
-Create a `.env` file in the project root with the following variables:
+A Google Gemini API Key (Optional, for AI features)
 
-```ini
+Installation & Setup
+Clone the Repository
+
+git clone [https://github.com/TiltedBl0ck/tilt-bot.git](https://github.com/TiltedBl0ck/tilt-bot.git)
+cd tilt-bot
+
+Install Dependencies
+It's recommended to use a virtual environment.
+
+# Create and activate a virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install the required packages
+pip install -r requirements.txt
+
+Configure the Bot
+The bot uses a .env file to store secret keys.
+
+Find the file named .env.example.
+
+Create a copy of it and rename the copy to .env.
+
+Open the new .env file and add your secret tokens. Do not use spaces or quotes.
+
+# Correct .env format
 BOT_TOKEN=your_discord_bot_token_here
-DATABASE_URL=your_postgresql_connection_string_here
-```
+GEMINI_API_KEY=your_gemini_api_key_here
 
-- `BOT_TOKEN`: The token for your Discord bot.
-- `DATABASE_URL`: The PostgreSQL connection string, including user, password, host, port, and database name. For example:
-  ```
-  postgresql://user:password@host:5432/database_name
-  ```
+You can get your BOT_TOKEN from the Discord Developer Portal.
 
-## Usage
+You can get a GEMINI_API_KEY from Google AI Studio.
 
-Run the bot with:
+Run the Bot
 
-```bash
 python main.py
-```
 
-Upon startup, the bot will:
+The bot should now be online and ready to go! The first time you run it, a Database.db file and a bot.log file will be created.
 
-- Initialize database tables if they do not exist.
-- Log into Discord and print ready status.
-- Start an hourly background task that logs the current time and number of guilds the bot is in.
+Slash Command Overview
+Here is a list of the main commands available. Use the new /help command in your server for a complete, interactive breakdown!
 
-## Commands
+/help: Shows the main interactive help menu.
 
-- `/ping`: Responds with `Pong! Latency: Xms` to check bot latency.
+/chat <prompt>: Talk to the bot's AI.
 
-## Customization
+/ping: Checks the bot's latency.
 
-- **Adding More Commands:** Use the `@bot.slash_command` decorator.
-- **Adjusting Task Interval:** Modify `@tasks.loop(hours=1)` to desired interval.
-- **Database Schema Updates:** Update `init_db()` function in `main.py`.
+/botinfo: Shows stats about Tilt-Bot.
 
-## Deployment
+/serverinfo: Displays detailed information about the server.
 
-### Docker
+/userinfo [member]: Shows info about a specific user.
 
-1. Create a `Dockerfile`:
-   ```dockerfile
-   FROM python:3.11-slim
-   WORKDIR /app
-   COPY . .
-   RUN pip install --no-cache-dir -r requirements.txt
-   CMD ["python", "main.py"]
-   ```
+/clear <count>: Deletes a specified number of messages.
 
-2. Build and run:
-   ```bash
-   docker build -t discord-bot .
-   docker run --env-file .env discord-bot
-   ```
+/setup <welcome/goodbye/serverstats>: Interactive menus to set up bot features.
 
-### Hosting Platforms
+/config <welcome/goodbye>: Edit the content of your welcome/goodbye messages.
 
-- **Wispbyte**: Use free tier with `.env` file or console `export` commands.
-- **Render**: Define environment variables in dashboard; set start command `python main.py`.
-- **Fly.io / Docker**: Deploy via Docker image and secrets.
-
-## License
-
-This project is released under the MIT License.
+This project is licensed under the MIT License.
