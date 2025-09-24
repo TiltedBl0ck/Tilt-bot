@@ -8,193 +8,141 @@ class Utility(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="help", description="Shows information about Tilt-bot.")
+    @app_commands.command(name="help", description="Shows information and help for Tilt-bot.")
     async def help(self, interaction: discord.Interaction):
-        """The new help command that shows bot version and information."""
+        """Provides a user-friendly help embed with key bot information and links."""
         embed = discord.Embed(
-            title="Tilt-bot Information",
-            description="Tilt-bot is an all-in-one utility bot for server moderation, support, and engagement.",
+            title="Tilt-bot Help & Information",
+            description="I'm an all-in-one utility bot for server management, moderation, and AI-powered chat. "
+                        "To see a full list of my commands, please use `/commands`.",
             color=discord.Color.blue(),
             timestamp=datetime.now(timezone.utc)
         )
-        # We now access the version directly from the bot instance.
-        embed.add_field(name="Version", value=self.bot.version)
-        embed.set_footer(text="Developed with ❤️")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        embed.set_thumbnail(url=self.bot.user.display_avatar.url)
+        embed.add_field(name="Version", value=f"`{self.bot.version}`", inline=True)
+        embed.add_field(name="Developer", value="TiltedBl0ck", inline=True)
+        embed.set_footer(text="Thank you for using Tilt-bot!")
+        
+        # Add buttons for invite link and support server/GitHub if you have one
+        view = discord.ui.View()
+        invite_link = f"https://discord.com/oauth2/authorize?client_id={self.bot.user.id}&scope=bot%20applications.commands&permissions=8"
+        view.add_item(discord.ui.Button(label="Invite Me!", style=discord.ButtonStyle.green, url=invite_link))
+        # view.add_item(discord.ui.Button(label="Support Server", style=discord.ButtonStyle.secondary, url="YOUR_SUPPORT_SERVER_LINK"))
+        
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-    @app_commands.command(name="commands", description="Show all available commands")
+    @app_commands.command(name="commands", description="Shows a detailed list of all available commands.")
     async def commands(self, interaction: discord.Interaction):
-        """The old help command, now renamed to /commands."""
+        """Displays a categorized and detailed list of all available bot commands."""
         try:
-            config = None
-            # --- THIS IS THE CORRECTED CODE ---
-            # The 'async with' statement handles opening and closing the database connection.
+            # Asynchronously get the guild's configuration from the database
             async with await get_db_connection() as conn:
-                # We use 'await conn.execute' to run the query asynchronously.
                 async with conn.execute("SELECT * FROM guild_config WHERE guild_id = ?", (interaction.guild.id,)) as cursor:
-                    # We use 'await cursor.fetchone()' to get the result.
                     config = await cursor.fetchone()
 
-            welcome_status = "✅" if config and config["welcome_channel_id"] else "❌"
-            goodbye_status = "✅" if config and config["goodbye_channel_id"] else "❌"
-            serverstats_status = "✅" if config and config["setup_complete"] else "❌"
+            # Determine the status of setup modules for this server
+            welcome_status = "✅ Configured" if config and config["welcome_channel_id"] else "❌ Not Set"
+            goodbye_status = "✅ Configured" if config and config["goodbye_channel_id"] else "❌ Not Set"
+            serverstats_status = "✅ Configured" if config and config["setup_complete"] else "❌ Not Set"
 
             embed = discord.Embed(
-                title="🤖 Tilt-bot Commands",
-                description="Here are the commands you can use:",
+                title="🤖 Tilt-bot Command List",
+                description="Here are all my commands. Status indicators show which setup modules are active on this server.",
                 color=discord.Color.blue(),
                 timestamp=datetime.now(timezone.utc)
             )
-            embed.add_field(
-                name="💬 AI Commands",
-                value="`/chat` - Have a conversation with the bot's AI.\n*You can also just @mention the bot!*",
-                inline=False
-            )
-            embed.add_field(
-                name="📊 Utility Commands",
-                value="`/help` `/commands` `/serverinfo` `/userinfo` `/roleinfo` `/avatar` `/membercount` `/ping` `/botinfo` `/emojis` `/invite`",
-                inline=False
-            )
-            embed.add_field(
-                name="🛡️ Moderation Commands",
-                value="`/clear` - Clear messages (1-100)",
-                inline=False
-            )
-            embed.add_field(
-                name="⚙️ Setup Commands",
-                value=f"{welcome_status} `/setup welcome` - Set up or remove the welcome channel.\n"
-                      f"{goodbye_status} `/setup goodbye` - Set up or remove the goodbye channel.\n"
-                      f"{serverstats_status} `/setup serverstats` - Set up or remove server stats counters.",
-                inline=False
-            )
-            embed.add_field(
-                name="🔧 Configuration Commands",
-                value="`/config welcome` - Manage the welcome message.\n"
-                      "`/config goodbye` - Manage the goodbye message.\n"
-                      "`/config serverstats` - Manage server stats counters.",
-                inline=False
-            )
+            embed.set_thumbnail(url=self.bot.user.display_avatar.url)
+            
+            embed.add_field(name="💬 AI Commands", value="`/chat` - Chat with the bot's AI.\n*You can also @mention me to start a conversation!*", inline=False)
+            embed.add_field(name="🛠️ Utility Commands", value="`/help`, `/commands`, `/serverinfo`, `/userinfo`, `/avatar`, `/ping`, `/botinfo`, `/invite`", inline=False)
+            embed.add_field(name="🛡️ Moderation", value="`/clear` - Bulk delete messages.", inline=False)
+            embed.add_field(name="⚙️ Setup Commands", value=f"**Welcome:** {welcome_status} (`/setup welcome`)\n**Goodbye:** {goodbye_status} (`/setup goodbye`)\n**Server Stats:** {serverstats_status} (`/setup serverstats`)", inline=False)
+            embed.add_field(name="🔧 Configuration", value="`/config welcome`\n`/config goodbye`\n`/config serverstats`", inline=False)
+            
+            embed.set_footer(text="Commands requiring admin rights are only visible to authorized users.")
             await interaction.response.send_message(embed=embed, ephemeral=True)
         except Exception as e:
             print(f"Error in 'commands' command: {e}")
-            await interaction.response.send_message("❌ Error displaying the commands list.", ephemeral=True)
+            await interaction.response.send_message("❌ An error occurred while fetching the command list.", ephemeral=True)
 
-    @app_commands.command(name="serverinfo", description="View server information")
+    @app_commands.command(name="serverinfo", description="Displays detailed information about the current server.")
     async def serverinfo(self, interaction: discord.Interaction):
-        try:
-            g = interaction.guild
-            embed = discord.Embed(title=g.name, color=discord.Color.blue(), timestamp=datetime.now(timezone.utc))
-            if g.icon:
-                embed.set_thumbnail(url=g.icon.url)
-            embed.add_field(name="Server ID", value=g.id, inline=True)
-            embed.add_field(name="Owner", value=g.owner.mention if g.owner else "Unknown", inline=True)
-            embed.add_field(name="Created", value=f"<t:{int(g.created_at.timestamp())}:F>", inline=True)
-            embed.add_field(name="Members", value=g.member_count, inline=True)
-            embed.add_field(name="Text Channels", value=len(g.text_channels), inline=True)
-            embed.add_field(name="Voice Channels", value=len(g.voice_channels), inline=True)
-            embed.add_field(name="Roles", value=len(g.roles), inline=True)
-            bot_count = sum(1 for m in g.members if m.bot)
-            embed.add_field(name="Bots", value=bot_count, inline=True)
-            await interaction.response.send_message(embed=embed)
-        except Exception:
-            await interaction.response.send_message("❌ Error retrieving server information.", ephemeral=True)
+        """Provides a comprehensive embed with server details."""
+        guild = interaction.guild
+        embed = discord.Embed(title=f"Server Info: {guild.name}", color=discord.Color.blue(), timestamp=datetime.now(timezone.utc))
+        if guild.icon:
+            embed.set_thumbnail(url=guild.icon.url)
+        
+        embed.add_field(name="Owner", value=guild.owner.mention, inline=True)
+        embed.add_field(name="Server ID", value=f"`{guild.id}`", inline=True)
+        embed.add_field(name="Created On", value=f"<t:{int(guild.created_at.timestamp())}:D>", inline=True)
+        
+        embed.add_field(name="Members", value=f"**Total:** {guild.member_count}\n**Humans:** {len([m for m in guild.members if not m.bot])}\n**Bots:** {len([m for m in guild.members if m.bot])}", inline=True)
+        embed.add_field(name="Channels", value=f"**Text:** {len(guild.text_channels)}\n**Voice:** {len(guild.voice_channels)}", inline=True)
+        embed.add_field(name="Roles", value=len(guild.roles), inline=True)
+
+        await interaction.response.send_message(embed=embed)
             
-    @app_commands.command(name="userinfo", description="View information about a user")
-    @app_commands.describe(member="The member to lookup")
+    @app_commands.command(name="userinfo", description="Displays detailed information about a user.")
+    @app_commands.describe(member="The user you want to get information about.")
     async def userinfo(self, interaction: discord.Interaction, member: discord.Member = None):
-        try:
-            m = member or interaction.user
-            embed = discord.Embed(title=m.display_name, color=m.color, timestamp=datetime.now(timezone.utc))
-            embed.set_thumbnail(url=m.display_avatar.url)
-            embed.add_field(name="User ID", value=m.id, inline=True)
-            embed.add_field(name="Username", value=str(m), inline=True)
-            embed.add_field(name="Bot", value="Yes" if m.bot else "No", inline=True)
-            embed.add_field(name="Account Created", value=f"<t:{int(m.created_at.timestamp())}:F>", inline=False)
-            if m.joined_at:
-                embed.add_field(name="Joined Server", value=f"<t:{int(m.joined_at.timestamp())}:F>", inline=False)
-            roles = [r.mention for r in m.roles[1:]] or ["No roles"]
-            embed.add_field(name=f"Roles ({len(m.roles)-1})", value=", ".join(roles), inline=False)
-            await interaction.response.send_message(embed=embed)
-        except Exception:
-            await interaction.response.send_message("❌ Error retrieving user information.", ephemeral=True)
+        """Provides a detailed embed on a specified user or the command author."""
+        user = member or interaction.user
+        embed = discord.Embed(title=f"User Info: {user.display_name}", color=user.color, timestamp=datetime.now(timezone.utc))
+        embed.set_thumbnail(url=user.display_avatar.url)
+        
+        embed.add_field(name="Username", value=f"`{user}`", inline=True)
+        embed.add_field(name="User ID", value=f"`{user.id}`", inline=True)
+        embed.add_field(name="Is a Bot?", value="Yes" if user.bot else "No", inline=True)
+        
+        embed.add_field(name="Account Created", value=f"<t:{int(user.created_at.timestamp())}:F>", inline=False)
+        if isinstance(user, discord.Member) and user.joined_at:
+            embed.add_field(name="Joined Server", value=f"<t:{int(user.joined_at.timestamp())}:F>", inline=False)
+        
+        if isinstance(user, discord.Member):
+            roles = [r.mention for r in user.roles[1:]] or ["None"]
+            embed.add_field(name=f"Roles ({len(user.roles)-1})", value=", ".join(roles), inline=False)
+            
+        await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="roleinfo", description="View information about a role")
-    @app_commands.describe(role="The role to lookup")
-    async def roleinfo(self, interaction: discord.Interaction, role: discord.Role):
-        try:
-            embed = discord.Embed(title=role.name, color=role.color, timestamp=datetime.now(timezone.utc))
-            embed.add_field(name="Role ID", value=role.id, inline=True)
-            embed.add_field(name="Members", value=len(role.members), inline=True)
-            embed.add_field(name="Created", value=f"<t:{int(role.created_at.timestamp())}:F>", inline=True)
-            embed.add_field(name="Position", value=role.position, inline=True)
-            embed.add_field(name="Mentionable", value=str(role.mentionable), inline=True)
-            embed.add_field(name="Color", value=str(role.color), inline=True)
-            await interaction.response.send_message(embed=embed)
-        except Exception:
-            await interaction.response.send_message("❌ Error retrieving role information.", ephemeral=True)
-
-    @app_commands.command(name="avatar", description="Get a user's avatar")
-    @app_commands.describe(member="The member whose avatar to show")
+    @app_commands.command(name="avatar", description="Displays a user's avatar.")
+    @app_commands.describe(member="The user whose avatar you want to see.")
     async def avatar(self, interaction: discord.Interaction, member: discord.Member = None):
-        try:
-            m = member or interaction.user
-            embed = discord.Embed(title=f"{m.display_name}'s Avatar", color=discord.Color.blue(), timestamp=datetime.now(timezone.utc))
-            embed.set_image(url=m.display_avatar.url)
-            await interaction.response.send_message(embed=embed)
-        except Exception:
-            await interaction.response.send_message("❌ Error retrieving avatar.", ephemeral=True)
+        """Shows a user's avatar in a large format."""
+        user = member or interaction.user
+        embed = discord.Embed(title=f"{user.display_name}'s Avatar", color=discord.Color.dark_grey())
+        embed.set_image(url=user.display_avatar.url)
+        await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="membercount", description="Show member count")
-    async def membercount(self, interaction: discord.Interaction):
-        try:
-            total = interaction.guild.member_count
-            bots = sum(1 for m in interaction.guild.members if m.bot)
-            humans = total - bots
-            await interaction.response.send_message(
-                f"**{interaction.guild.name}** has **{total}** members (**{humans}** humans, **{bots}** bots)."
-            )
-        except Exception:
-            await interaction.response.send_message("❌ Error retrieving member count.", ephemeral=True)
-
-    @app_commands.command(name="ping", description="Show bot latency")
+    @app_commands.command(name="ping", description="Checks the bot's response time.")
     async def ping(self, interaction: discord.Interaction):
-        try:
-            await interaction.response.send_message(f"Pong! Latency is {round(self.bot.latency*1000)}ms.")
-        except Exception:
-            await interaction.response.send_message("❌ Error checking ping.", ephemeral=True)
+        """Calculates and displays the bot's latency."""
+        latency = round(self.bot.latency * 1000)
+        await interaction.response.send_message(f"Pong! 🏓 Latency is {latency}ms.")
 
-    @app_commands.command(name="botinfo", description="Information about the bot")
+    @app_commands.command(name="botinfo", description="Displays information about Tilt-bot.")
     async def botinfo(self, interaction: discord.Interaction):
-        try:
-            embed = discord.Embed(title="Bot Info", color=discord.Color.purple(), timestamp=datetime.now(timezone.utc))
-            embed.add_field(name="Username", value=str(self.bot.user), inline=True)
-            embed.add_field(name="ID", value=self.bot.user.id, inline=True)
-            embed.add_field(name="Latency", value=f"{round(self.bot.latency*1000)}ms", inline=True)
-            embed.add_field(name="Servers", value=len(self.bot.guilds), inline=True)
-            total = sum(g.member_count for g in self.bot.guilds)
-            embed.add_field(name="Total Members", value=total, inline=True)
-            await interaction.response.send_message(embed=embed)
-        except Exception:
-            await interaction.response.send_message("❌ Error retrieving bot information.", ephemeral=True)
+        """Shows detailed statistics and information about the bot itself."""
+        embed = discord.Embed(title="Tilt-bot Statistics", color=discord.Color.purple(), timestamp=datetime.now(timezone.utc))
+        embed.set_thumbnail(url=self.bot.user.display_avatar.url)
+        
+        embed.add_field(name="Version", value=f"`{self.bot.version}`", inline=True)
+        embed.add_field(name="Latency", value=f"{round(self.bot.latency*1000)}ms", inline=True)
+        embed.add_field(name="Developer", value="TiltedBl0ck", inline=True)
+        
+        embed.add_field(name="Servers", value=len(self.bot.guilds), inline=True)
+        total_members = sum(g.member_count for g in self.bot.guilds)
+        embed.add_field(name="Total Users", value=total_members, inline=True)
+        
+        await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="emojis", description="List server emojis")
-    async def emojis(self, interaction: discord.Interaction):
-        try:
-            es = interaction.guild.emojis
-            if not es:
-                await interaction.response.send_message("This server has no custom emojis.")
-            else:
-                await interaction.response.send_message(" ".join(str(e) for e in es))
-        except Exception:
-            await interaction.response.send_message("❌ Error retrieving emojis.", ephemeral=True)
-
-    @app_commands.command(name="invite", description="Get bot invite link")
+    @app_commands.command(name="invite", description="Get the bot's invite link.")
     async def invite(self, interaction: discord.Interaction):
-        try:
-            link = f"https://discord.com/oauth2/authorize?client_id={self.bot.user.id}&scope=bot%20applications.commands&permissions=8"
-            await interaction.response.send_message(f"Invite me: {link}")
-        except Exception:
-            await interaction.response.send_message("❌ Error generating invite link.", ephemeral=True)
+        """Provides a button to invite the bot to another server."""
+        invite_link = f"https://discord.com/oauth2/authorize?client_id={self.bot.user.id}&scope=bot%20applications.commands&permissions=8"
+        view = discord.ui.View()
+        view.add_item(discord.ui.Button(label="Click to Invite!", style=discord.ButtonStyle.green, url=invite_link))
+        await interaction.response.send_message("Use the button below to add me to your server:", view=view, ephemeral=True)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Utility(bot))
