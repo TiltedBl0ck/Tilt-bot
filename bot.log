@@ -46,3 +46,191 @@ discord.app_commands.errors.CommandInvokeError: Command 'help' raised an excepti
 2025-09-24 13:44:57,874 - cogs.gemini - INFO - AI mention response sent to tiltedblock in TiltedBlock HQ
 2025-09-24 13:45:14,380 - cogs.moderation - INFO - User tiltedblock cleared 3 messages in TiltedBlock HQ
 2025-09-24 13:45:36,794 - __main__ - INFO - Bot has been shut down.
+2025-09-24 14:19:13,169 - __main__ - INFO - Database initialized successfully.
+2025-09-24 14:19:13,169 - discord.client - WARNING - PyNaCl is not installed, voice will NOT be supported
+2025-09-24 14:19:13,169 - discord.client - INFO - logging in using static token
+2025-09-24 14:19:17,434 - __main__ - INFO - Starting bot setup...
+2025-09-24 14:19:17,463 - __main__ - INFO - Successfully loaded cogs.help
+2025-09-24 14:19:17,470 - __main__ - INFO - Successfully loaded cogs.moderation
+2025-09-24 14:19:17,477 - __main__ - INFO - Successfully loaded cogs.utility
+2025-09-24 14:19:17,500 - __main__ - INFO - Successfully loaded cogs.management
+2025-09-24 14:19:18,036 - cogs.gemini - INFO - Gemini model configured successfully.
+2025-09-24 14:19:18,037 - __main__ - INFO - Successfully loaded cogs.gemini
+2025-09-24 14:19:18,038 - __main__ - INFO - Successfully loaded cogs.error_handler
+2025-09-24 14:19:18,427 - __main__ - INFO - Synced 11 slash commands
+2025-09-24 14:19:22,621 - discord.gateway - INFO - Shard ID None has connected to Gateway (Session ID: 8d76f87eba37934878b1e3d9507b921e).
+2025-09-24 14:19:24,646 - __main__ - INFO - Tilt-bot#9361 has connected to Discord!
+2025-09-24 14:19:24,646 - __main__ - INFO - Bot is in 1 guilds
+2025-09-24 14:19:24,647 - cogs.management - ERROR - Error in update_server_stats: threads can only be started once
+2025-09-24 14:19:46,625 - asyncio - ERROR - Task exception was never retrieved
+future: <Task finished name='CommandTree-invoker' coro=<CommandTree._from_interaction.<locals>.wrapper() done, defined at C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\app_commands\tree.py:1136> exception=NotFound('404 Not Found (error code: 10062): Unknown interaction')>
+Traceback (most recent call last):
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\app_commands\commands.py", line 858, in _do_call
+    return await self._callback(self.binding, interaction, **params)  # type: ignore
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "Z:\#Files\Desktop\Tilt-bot-main\cogs\help.py", line 93, in help
+    await interaction.response.defer(ephemeral=True)
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\interactions.py", line 858, in defer
+    response = await adapter.create_interaction_response(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\webhook\async_.py", line 224, in request
+    raise NotFound(response, data)
+discord.errors.NotFound: 404 Not Found (error code: 10062): Unknown interaction
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\app_commands\tree.py", line 1297, in _call
+    await command._invoke_with_namespace(interaction, namespace)
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\app_commands\commands.py", line 884, in _invoke_with_namespace
+    return await self._do_call(interaction, transformed_values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\app_commands\commands.py", line 877, in _do_call
+    raise CommandInvokeError(self, e) from e
+discord.app_commands.errors.CommandInvokeError: Command 'help' raised an exception: NotFound: 404 Not Found (error code: 10062): Unknown interaction
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\app_commands\tree.py", line 1138, in wrapper
+    await self._call(interaction)
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\app_commands\tree.py", line 1301, in _call
+    await self.on_error(interaction, e)
+  File "Z:\#Files\Desktop\Tilt-bot-main\cogs\error_handler.py", line 18, in on_app_command_error
+    await interaction.response.send_message(
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\interactions.py", line 1051, in send_message
+    response = await adapter.create_interaction_response(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\webhook\async_.py", line 224, in request
+    raise NotFound(response, data)
+discord.errors.NotFound: 404 Not Found (error code: 10062): Unknown interaction
+2025-09-24 14:20:14,699 - discord.ui.view - ERROR - Ignoring exception in view <HelpView timeout=180 children=1> for item <HelpDropdown placeholder='Choose a category to see its commands...' min_values=1 max_values=1 disabled=False id=None>
+Traceback (most recent call last):
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\ui\view.py", line 552, in _scheduled_task
+    await item.callback(interaction)
+  File "Z:\#Files\Desktop\Tilt-bot-main\cogs\help.py", line 27, in callback
+    await interaction.response.defer()
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\interactions.py", line 858, in defer
+    response = await adapter.create_interaction_response(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\webhook\async_.py", line 224, in request
+    raise NotFound(response, data)
+discord.errors.NotFound: 404 Not Found (error code: 10062): Unknown interaction
+2025-09-24 14:21:33,256 - discord.ui.view - ERROR - Ignoring exception in view <HelpView timeout=180 children=1> for item <HelpDropdown placeholder='Choose a category to see its commands...' min_values=1 max_values=1 disabled=False id=None>
+Traceback (most recent call last):
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\ui\view.py", line 552, in _scheduled_task
+    await item.callback(interaction)
+  File "Z:\#Files\Desktop\Tilt-bot-main\cogs\help.py", line 27, in callback
+    await interaction.response.defer()
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\interactions.py", line 858, in defer
+    response = await adapter.create_interaction_response(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\webhook\async_.py", line 224, in request
+    raise NotFound(response, data)
+discord.errors.NotFound: 404 Not Found (error code: 10062): Unknown interaction
+2025-09-24 14:22:44,958 - asyncio - ERROR - Task exception was never retrieved
+future: <Task finished name='CommandTree-invoker' coro=<CommandTree._from_interaction.<locals>.wrapper() done, defined at C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\app_commands\tree.py:1136> exception=NotFound('404 Not Found (error code: 10062): Unknown interaction')>
+Traceback (most recent call last):
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\app_commands\commands.py", line 858, in _do_call
+    return await self._callback(self.binding, interaction, **params)  # type: ignore
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "Z:\#Files\Desktop\Tilt-bot-main\cogs\management.py", line 327, in config_goodbye
+    async with await get_db_connection() as conn:
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\aiosqlite\core.py", line 143, in __aenter__
+    return await self
+           ^^^^^^^^^^
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\aiosqlite\core.py", line 139, in __await__
+    self.start()
+  File "C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.11_3.11.2544.0_x64__qbz5n2kfra8p0\Lib\threading.py", line 959, in start
+    raise RuntimeError("threads can only be started once")
+RuntimeError: threads can only be started once
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\app_commands\tree.py", line 1297, in _call
+    await command._invoke_with_namespace(interaction, namespace)
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\app_commands\commands.py", line 884, in _invoke_with_namespace
+    return await self._do_call(interaction, transformed_values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\app_commands\commands.py", line 877, in _do_call
+    raise CommandInvokeError(self, e) from e
+discord.app_commands.errors.CommandInvokeError: Command 'goodbye' raised an exception: RuntimeError: threads can only be started once
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\app_commands\tree.py", line 1138, in wrapper
+    await self._call(interaction)
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\app_commands\tree.py", line 1301, in _call
+    await self.on_error(interaction, e)
+  File "Z:\#Files\Desktop\Tilt-bot-main\cogs\error_handler.py", line 18, in on_app_command_error
+    await interaction.response.send_message(
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\interactions.py", line 1051, in send_message
+    response = await adapter.create_interaction_response(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\webhook\async_.py", line 224, in request
+    raise NotFound(response, data)
+discord.errors.NotFound: 404 Not Found (error code: 10062): Unknown interaction
+2025-09-24 14:27:34,470 - __main__ - INFO - Bot has been shut down.
+2025-09-24 14:27:42,406 - __main__ - INFO - Database initialized successfully.
+2025-09-24 14:27:42,407 - discord.client - WARNING - PyNaCl is not installed, voice will NOT be supported
+2025-09-24 14:27:42,407 - discord.client - INFO - logging in using static token
+2025-09-24 14:27:46,606 - __main__ - INFO - Starting bot setup...
+2025-09-24 14:27:46,627 - __main__ - INFO - Successfully loaded cogs.help
+2025-09-24 14:27:46,628 - __main__ - INFO - Successfully loaded cogs.moderation
+2025-09-24 14:27:46,629 - __main__ - INFO - Successfully loaded cogs.utility
+2025-09-24 14:27:46,650 - __main__ - INFO - Successfully loaded cogs.management
+2025-09-24 14:27:47,142 - cogs.gemini - INFO - Gemini model configured successfully.
+2025-09-24 14:27:47,142 - __main__ - INFO - Successfully loaded cogs.gemini
+2025-09-24 14:27:47,144 - __main__ - INFO - Successfully loaded cogs.error_handler
+2025-09-24 14:27:47,665 - __main__ - INFO - Synced 11 slash commands
+2025-09-24 14:27:51,839 - discord.gateway - INFO - Shard ID None has connected to Gateway (Session ID: d52a494f0b7095039966f0fc220d3e4c).
+2025-09-24 14:27:53,858 - __main__ - INFO - Tilt-bot#9361 has connected to Discord!
+2025-09-24 14:27:53,858 - __main__ - INFO - Bot is in 1 guilds
+2025-09-24 14:29:24,056 - cogs.gemini - INFO - AI mention response sent to tiltedblock in TiltedBlock HQ
+2025-09-24 14:29:28,988 - __main__ - INFO - Bot has been shut down.
+2025-09-24 14:29:56,287 - __main__ - INFO - Database initialized successfully.
+2025-09-24 14:29:56,287 - discord.client - WARNING - PyNaCl is not installed, voice will NOT be supported
+2025-09-24 14:29:56,287 - discord.client - INFO - logging in using static token
+2025-09-24 14:30:00,546 - __main__ - INFO - Starting bot setup...
+2025-09-24 14:30:00,557 - __main__ - INFO - Successfully loaded cogs.help
+2025-09-24 14:30:00,558 - __main__ - INFO - Successfully loaded cogs.moderation
+2025-09-24 14:30:00,559 - __main__ - INFO - Successfully loaded cogs.utility
+2025-09-24 14:30:00,572 - __main__ - INFO - Successfully loaded cogs.management
+2025-09-24 14:30:01,067 - cogs.gemini - INFO - Gemini model configured successfully.
+2025-09-24 14:30:01,068 - __main__ - INFO - Successfully loaded cogs.gemini
+2025-09-24 14:30:01,083 - __main__ - INFO - Successfully loaded cogs.error_handler
+2025-09-24 14:30:01,526 - __main__ - INFO - Synced 11 slash commands
+2025-09-24 14:30:05,730 - discord.gateway - INFO - Shard ID None has connected to Gateway (Session ID: dd05af073fc9bc17b395e38efb3de35f).
+2025-09-24 14:30:07,746 - __main__ - INFO - Tilt-bot#9361 has connected to Discord!
+2025-09-24 14:30:07,746 - __main__ - INFO - Bot is in 1 guilds
+2025-09-24 14:30:30,000 - discord.ui.view - ERROR - Ignoring exception in view <HelpView timeout=180 children=1> for item <HelpDropdown placeholder='Choose a category to see its commands...' min_values=1 max_values=1 disabled=False id=None>
+Traceback (most recent call last):
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\ui\view.py", line 552, in _scheduled_task
+    await item.callback(interaction)
+  File "Z:\#Files\Desktop\Tilt-bot-main\cogs\help.py", line 56, in callback
+    await interaction.response.edit_message(embed=embed)
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\interactions.py", line 1207, in edit_message
+    response = await adapter.create_interaction_response(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\User\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\discord\webhook\async_.py", line 224, in request
+    raise NotFound(response, data)
+discord.errors.NotFound: 404 Not Found (error code: 10062): Unknown interaction
+2025-09-24 14:31:17,773 - __main__ - INFO - Bot has been shut down.
+2025-09-24 14:32:09,216 - __main__ - INFO - Database initialized successfully.
+2025-09-24 14:32:09,216 - discord.client - WARNING - PyNaCl is not installed, voice will NOT be supported
+2025-09-24 14:32:09,217 - discord.client - INFO - logging in using static token
+2025-09-24 14:32:13,552 - __main__ - INFO - Starting bot setup...
+2025-09-24 14:32:13,567 - __main__ - INFO - Successfully loaded cogs.help
+2025-09-24 14:32:13,569 - __main__ - INFO - Successfully loaded cogs.moderation
+2025-09-24 14:32:13,570 - __main__ - INFO - Successfully loaded cogs.utility
+2025-09-24 14:32:13,573 - __main__ - INFO - Successfully loaded cogs.management
+2025-09-24 14:32:14,044 - cogs.gemini - INFO - Gemini model configured successfully.
+2025-09-24 14:32:14,045 - __main__ - INFO - Successfully loaded cogs.gemini
+2025-09-24 14:32:14,062 - __main__ - INFO - Successfully loaded cogs.error_handler
+2025-09-24 14:32:14,488 - __main__ - INFO - Synced 11 slash commands
+2025-09-24 14:32:18,894 - discord.gateway - INFO - Shard ID None has connected to Gateway (Session ID: a676cf33bc25b01908e25087f7bc033d).
+2025-09-24 14:32:20,896 - __main__ - INFO - Tilt-bot#9361 has connected to Discord!
+2025-09-24 14:32:20,896 - __main__ - INFO - Bot is in 1 guilds
+2025-09-24 14:32:47,100 - __main__ - INFO - Bot has been shut down.
