@@ -8,56 +8,52 @@ class Utility(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="help", description="Shows information and help for Tilt-bot.")
-    async def help(self, interaction: discord.Interaction):
-        """Provides a user-friendly help embed with key bot information and links."""
-        embed = discord.Embed(
-            title="Tilt-bot Help & Information",
-            description="I'm an all-in-one utility bot for server management, moderation, and AI-powered chat. "
-                        "To see a full list of my commands, please use `/commands`.",
-            color=discord.Color.blue(),
-            timestamp=datetime.now(timezone.utc)
-        )
-        embed.set_author(name=self.bot.user.name, icon_url=self.bot.user.display_avatar.url)
-        embed.set_thumbnail(url=self.bot.user.display_avatar.url)
-        embed.add_field(name="Version", value=f"`{self.bot.version}`", inline=True)
-        embed.add_field(name="Developer", value="TiltedBl0ck", inline=True)
-        embed.set_footer(text="Thank you for using Tilt-bot!")
-        
-        view = discord.ui.View()
-        invite_link = f"https://discord.com/oauth2/authorize?client_id={self.bot.user.id}&scope=bot%20applications.commands&permissions=8"
-        view.add_item(discord.ui.Button(label="Invite Me!", style=discord.ButtonStyle.green, url=invite_link))
-        
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-
-    @app_commands.command(name="commands", description="Shows a detailed list of all available commands.")
+    @app_commands.command(name="help", description="Shows a detailed list of all available commands.")
     @app_commands.guild_only()
-    async def commands(self, interaction: discord.Interaction):
+    async def help(self, interaction: discord.Interaction):
         """Displays a categorized and detailed list of all available bot commands."""
-        # This command will now only run in a server, preventing the error.
         async with await get_db_connection() as conn:
             async with conn.execute("SELECT * FROM guild_config WHERE guild_id = ?", (interaction.guild.id,)) as cursor:
                 config = await cursor.fetchone()
 
+        # Determine the status of setup modules for this server
         welcome_status = "✅ Configured" if config and config["welcome_channel_id"] else "❌ Not Set"
         goodbye_status = "✅ Configured" if config and config["goodbye_channel_id"] else "❌ Not Set"
         serverstats_status = "✅ Configured" if config and config["setup_complete"] else "❌ Not Set"
 
         embed = discord.Embed(
-            title="Tilt-bot Command List",
-            description="Here are all my commands. Status indicators show which setup modules are active on this server.",
-            color=discord.Color.blue(),
+            title="Tilt-bot Help",
+            description="Here are the commands you can use:",
+            color=discord.Color.dark_theme(),
             timestamp=datetime.now(timezone.utc)
         )
-        embed.set_author(name=self.bot.user.name, icon_url=self.bot.user.display_avatar.url)
         
-        embed.add_field(name="💬 AI Commands", value="`/chat` - Chat with the bot's AI.\n*You can also @mention me to start a conversation!*", inline=False)
-        embed.add_field(name="🛠️ Utility Commands", value="`/help`, `/commands`, `/serverinfo`, `/userinfo`, `/avatar`, `/ping`, `/botinfo`, `/invite`", inline=False)
-        embed.add_field(name="🛡️ Moderation", value="`/clear` - Bulk delete messages.", inline=False)
-        embed.add_field(name="⚙️ Setup Commands", value=f"**Welcome:** {welcome_status} (`/setup welcome`)\n**Goodbye:** {goodbye_status} (`/setup goodbye`)\n**Server Stats:** {serverstats_status} (`/setup serverstats`)", inline=False)
-        embed.add_field(name="🔧 Configuration", value="`/config welcome`\n`/config goodbye`\n`/config serverstats`", inline=False)
+        embed.add_field(
+            name="🛠️ Utility Commands",
+            value="`/help` `/serverinfo` `/userinfo` `/avatar` `/ping` `/botinfo` `/invite`",
+            inline=False
+        )
+        embed.add_field(
+            name="🛡️ Moderation Commands",
+            value="`/clear` - Clear messages (1-100)",
+            inline=False
+        )
+        embed.add_field(
+            name="⚙️ Setup Commands",
+            value=f"`/setup welcome` - Set up the welcome channel. **({welcome_status})**\n"
+                  f"`/setup goodbye` - Set up the goodbye channel. **({goodbye_status})**\n"
+                  f"`/setup serverstats` - Create server stats counters. **({serverstats_status})**",
+            inline=False
+        )
+        embed.add_field(
+            name="🔧 Configuration Commands",
+            value="`/config welcome` - Manage the welcome message.\n"
+                  "`/config goodbye` - Manage the goodbye message.\n"
+                  "`/config serverstats` - Manage server stats counters.",
+            inline=False
+        )
         
-        embed.set_footer(text="Commands requiring admin rights are only visible to authorized users.")
+        embed.set_footer(text=f"Tilt-bot {self.bot.version}")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="serverinfo", description="Displays detailed information about the current server.")
@@ -144,5 +140,4 @@ class Utility(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Utility(bot))
-
 
