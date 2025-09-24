@@ -1,27 +1,30 @@
-"""
-Database Connection Utilities for Tilt-bot
-
-This module provides database connection functionality for the bot's
-SQLite database operations.
-
-Author: TiltedBl0ck
-Version: 2.0.0
-"""
-
 import aiosqlite
 from pathlib import Path
+import logging
 
-# Correctly point the DB path to the root directory of the bot
+logger = logging.getLogger(__name__)
 DB_PATH = Path(__file__).parent.parent.parent / "Database.db"
 
-async def get_db_connection():
-    """
-    Opens an asynchronous connection to the SQLite database.
+async def init_db():
+    """Initializes the database schema if it doesn't exist."""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS guild_config (
+            guild_id                  INTEGER PRIMARY KEY,
+            welcome_channel_id        INTEGER,
+            goodbye_channel_id        INTEGER,
+            welcome_message           TEXT,
+            welcome_image             TEXT,
+            goodbye_message           TEXT,
+            goodbye_image             TEXT
+        )
+        """)
+        await conn.commit()
+        logger.info("Database has been successfully initialized.")
 
-    Returns:
-        aiosqlite.Connection: The database connection object
-    """
+async def get_db_connection():
+    """Opens an asynchronous connection to the SQLite database."""
     conn = await aiosqlite.connect(DB_PATH)
-    # Set the row_factory to access columns by name
     conn.row_factory = aiosqlite.Row
     return conn
+
