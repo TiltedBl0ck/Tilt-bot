@@ -2,10 +2,11 @@
 .env
 
 # Ignore the database file. It should not be on GitHub.
-tilt_bot.db
+Database.db
 
 # Ignore log files.
 logs/
+bot.log
 
 # Ignore Python's cache files.
 __pycache__/
