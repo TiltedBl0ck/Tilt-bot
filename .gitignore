@@ -10,6 +10,3 @@ bot.log
 
 # Ignore Python's cache files.
 __pycache__/
-
-# Ignore web files.
-web/
