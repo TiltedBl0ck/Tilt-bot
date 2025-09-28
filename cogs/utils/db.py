@@ -1,6 +1,7 @@
 import aiosqlite
 from pathlib import Path
 import logging
+from contextlib import asynccontextmanager
 
 logger = logging.getLogger(__name__)
 DB_PATH = Path(__file__).parent.parent.parent / "Database.db"
@@ -26,9 +27,16 @@ async def init_db():
         await conn.commit()
         logger.info("Database has been successfully initialized.")
 
+@asynccontextmanager
 async def get_db_connection():
-    """Opens an asynchronous connection to the SQLite database."""
+    """
+    Opens an asynchronous connection to the SQLite database as a context manager.
+    This ensures the connection is always closed properly.
+    """
     conn = await aiosqlite.connect(DB_PATH)
     conn.row_factory = aiosqlite.Row
-    return conn
+    try:
+        yield conn
+    finally:
+        await conn.close()
 

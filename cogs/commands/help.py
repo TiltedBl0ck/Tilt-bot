@@ -23,14 +23,11 @@ class HelpCommand(commands.Cog):
         if self.bot.user.display_avatar:
             embed.set_thumbnail(url=self.bot.user.display_avatar.url)
 
-        # Get the current server's configuration for status checks
-        conn = await get_db_connection()
-        try:
+        # Get the current server's configuration for status checks using an async context manager
+        config = None
+        async with get_db_connection() as conn:
             cursor = await conn.execute("SELECT * FROM guild_config WHERE guild_id = ?", (interaction.guild_id,))
             config = await cursor.fetchone()
-        finally:
-            if conn:
-                await conn.close()
 
         # Determine status for setup commands
         welcome_status = "✅" if config and config["welcome_channel_id"] else "❌"
@@ -38,13 +35,23 @@ class HelpCommand(commands.Cog):
         serverstats_status = "✅" if config and config["stats_category_id"] else "❌"
 
         cogs_with_commands = {}
+        # Exclude this cog and other handlers from the help menu
+        excluded_cogs = ["CommandHandler", "MemberEvents", "ErrorHandler", "HelpCommand", "Gemini"]
+        
+        # Add the Gemini cog manually to control its position and title
+        gemini_cog = self.bot.get_cog("Gemini")
+        if gemini_cog:
+            cogs_with_commands["AI Chat"] = gemini_cog.get_app_commands()
+
         for name, cog in self.bot.cogs.items():
-            if name in ["CommandHandler", "MemberEvents", "ErrorHandler", "HelpCommand"]:
+            if name in excluded_cogs:
                 continue
             
             app_commands_in_cog = cog.get_app_commands()
             if app_commands_in_cog:
-                cogs_with_commands[name] = app_commands_in_cog
+                # Use a more user-friendly name for the cog
+                cog_title = name.replace("Command", "").replace("Commands", "")
+                cogs_with_commands[cog_title] = app_commands_in_cog
 
         for name, command_list in cogs_with_commands.items():
             command_text = []
@@ -71,6 +78,9 @@ class HelpCommand(commands.Cog):
                     command_text.append(f"`/{cmd.name}` - {cmd.description}")
             
             embed.add_field(name=f"**{name}**", value="\n".join(command_text), inline=False)
+        
+        # Add the bot version to the footer
+        embed.set_footer(text=f"Tilt-bot v{self.bot.version}")
         
         return embed
 

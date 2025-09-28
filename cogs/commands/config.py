@@ -21,17 +21,13 @@ class ConfigCommands(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     async def config_welcome(self, interaction: discord.Interaction, message: str, image_url: str = None):
         """Updates the guild's welcome message configuration in the database."""
-        conn = await get_db_connection()
-        try:
+        async with get_db_connection() as conn:
             await conn.execute(
                 "INSERT INTO guild_config (guild_id, welcome_message, welcome_image) VALUES (?, ?, ?) ON CONFLICT(guild_id) DO UPDATE SET welcome_message=excluded.welcome_message, welcome_image=excluded.welcome_image",
                 (interaction.guild.id, message, image_url)
             )
             await conn.commit()
             await interaction.response.send_message("✅ Welcome configuration has been updated!", ephemeral=True)
-        finally:
-            if conn:
-                await conn.close()
 
     @config_group.command(name="goodbye", description="Set the custom goodbye message and image.")
     @app_commands.describe(
@@ -41,17 +37,13 @@ class ConfigCommands(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     async def config_goodbye(self, interaction: discord.Interaction, message: str, image_url: str = None):
         """Updates the guild's goodbye message configuration in the database."""
-        conn = await get_db_connection()
-        try:
+        async with get_db_connection() as conn:
             await conn.execute(
                 "INSERT INTO guild_config (guild_id, goodbye_message, goodbye_image) VALUES (?, ?, ?) ON CONFLICT(guild_id) DO UPDATE SET goodbye_message=excluded.goodbye_message, goodbye_image=excluded.goodbye_image",
                 (interaction.guild.id, message, image_url)
             )
             await conn.commit()
             await interaction.response.send_message("✅ Goodbye configuration has been updated!", ephemeral=True)
-        finally:
-            if conn:
-                await conn.close()
 
     @config_group.command(name="serverstats", description="Toggle which server statistics to display.")
     @app_commands.describe(
@@ -63,32 +55,29 @@ class ConfigCommands(commands.Cog):
     async def config_serverstats(self, interaction: discord.Interaction, members: bool, bots: bool, roles: bool):
         """Updates the visibility of server stats channels."""
         await interaction.response.defer(ephemeral=True)
-        conn = await get_db_connection()
         try:
-            cursor = await conn.execute("SELECT * FROM guild_config WHERE guild_id = ?", (interaction.guild.id,))
-            config = await cursor.fetchone()
+            async with get_db_connection() as conn:
+                cursor = await conn.execute("SELECT * FROM guild_config WHERE guild_id = ?", (interaction.guild.id,))
+                config = await cursor.fetchone()
 
-            if not config or not config["stats_category_id"]:
-                await interaction.followup.send("❌ Please run `/setup serverstats` first to create the channels.", ephemeral=True)
-                return
+                if not config or not config["stats_category_id"]:
+                    await interaction.followup.send("❌ Please run `/setup serverstats` first to create the channels.", ephemeral=True)
+                    return
 
-            # Toggle channels based on user input
-            member_channel = interaction.guild.get_channel(config["member_count_channel_id"])
-            if member_channel: await member_channel.edit(view_permission=members)
-            
-            bot_channel = interaction.guild.get_channel(config["bot_count_channel_id"])
-            if bot_channel: await bot_channel.edit(view_permission=bots)
-            
-            role_channel = interaction.guild.get_channel(config["role_count_channel_id"])
-            if role_channel: await role_channel.edit(view_permission=roles)
+                # Toggle channels based on user input
+                member_channel = interaction.guild.get_channel(config["member_count_channel_id"])
+                if member_channel: await member_channel.edit(view_permission=members)
+                
+                bot_channel = interaction.guild.get_channel(config["bot_count_channel_id"])
+                if bot_channel: await bot_channel.edit(view_permission=bots)
+                
+                role_channel = interaction.guild.get_channel(config["role_count_channel_id"])
+                if role_channel: await role_channel.edit(view_permission=roles)
 
-            await interaction.followup.send("✅ Server stats visibility has been updated!", ephemeral=True)
+                await interaction.followup.send("✅ Server stats visibility has been updated!", ephemeral=True)
         except Exception as e:
             logger.error(f"Error in config serverstats: {e}")
             await interaction.followup.send("❌ An error occurred while updating the channels.", ephemeral=True)
-        finally:
-            if conn:
-                await conn.close()
 
 async def setup(bot: commands.Bot):
     """The setup function to add this cog to the bot."""

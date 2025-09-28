@@ -16,4 +16,3 @@ class PingCommand(commands.Cog):
 async def setup(bot: commands.Bot):
     """The setup function to add this cog to the bot."""
     await bot.add_cog(PingCommand(bot))
-
