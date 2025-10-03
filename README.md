@@ -2,7 +2,7 @@ Tilt-Bot v2.0.0
 Tilt-Bot is a modern, feature-rich, and easy-to-use Discord bot built with the latest discord.py library. It leverages slash commands and an interactive UI for a seamless user experience.
 
 ✨ Features
-🤖 AI Chat: Have a conversation with the bot using Google's Gemini AI. Just mention the bot or use the /chat command.
+🤖 AI Chat: Have a conversation with the bot using a free Gemini API proxy from Puter.com. Just mention the bot or use the /chat command.
 
 👋 Welcome & Goodbye: Automatically greet new members and say goodbye to those who leave with customizable messages and images.
 
@@ -22,8 +22,6 @@ Python 3.10 or higher
 
 A Discord Bot Token
 
-A Google Gemini API Key (Optional, for AI features)
-
 Installation & Setup
 Clone the Repository
 
@@ -41,21 +39,18 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
 Configure the Bot
-The bot uses a .env file to store secret keys.
+The bot uses a .env file to store your bot token.
 
 Find the file named .env.example.
 
 Create a copy of it and rename the copy to .env.
 
-Open the new .env file and add your secret tokens. Do not use spaces or quotes.
+Open the new .env file and add your secret token. Do not use spaces or quotes.
 
 # Correct .env format
 BOT_TOKEN=your_discord_bot_token_here
-GEMINI_API_KEY=your_gemini_api_key_here
 
 You can get your BOT_TOKEN from the Discord Developer Portal.
-
-You can get a GEMINI_API_KEY from Google AI Studio.
 
 Run the Bot
 
