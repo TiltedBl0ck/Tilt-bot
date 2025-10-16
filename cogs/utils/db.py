@@ -21,9 +21,23 @@ async def init_db():
             stats_category_id         INTEGER,
             member_count_channel_id   INTEGER,
             bot_count_channel_id      INTEGER,
-            role_count_channel_id     INTEGER
+            role_count_channel_id     INTEGER,
+            counting_channel_id       INTEGER,
+            current_count             INTEGER DEFAULT 0,
+            last_counter_id           INTEGER
         )
         """)
+        
+        # Add new columns if they don't exist to avoid errors on existing databases.
+        try:
+            await conn.execute("ALTER TABLE guild_config ADD COLUMN counting_channel_id INTEGER")
+            await conn.execute("ALTER TABLE guild_config ADD COLUMN current_count INTEGER DEFAULT 0")
+            await conn.execute("ALTER TABLE guild_config ADD COLUMN last_counter_id INTEGER")
+            logger.info("Successfully added counting game columns to the database schema.")
+        except aiosqlite.OperationalError:
+            # This error means the columns already exist, which is fine.
+            pass
+            
         await conn.commit()
         logger.info("Database has been successfully initialized.")
 
@@ -39,4 +53,3 @@ async def get_db_connection():
         yield conn
     finally:
         await conn.close()
-

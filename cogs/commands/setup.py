@@ -101,7 +101,32 @@ class SetupCommands(commands.Cog):
             logger.error(f"Error in serverstats setup: {e}")
             await interaction.followup.send("❌ An error occurred.", ephemeral=True)
 
+    @setup_group.command(name="counting", description="Set or remove the counting game channel.")
+    @app_commands.describe(action="Choose to set or unset the channel.", channel="The channel for the counting game.")
+    @app_commands.choices(action=[
+        app_commands.Choice(name="Set", value="set"),
+        app_commands.Choice(name="Unset", value="unset")
+    ])
+    @app_commands.checks.has_permissions(administrator=True)
+    async def setup_counting(self, interaction: discord.Interaction, action: str, channel: discord.TextChannel = None):
+        """Sets or unsets the counting channel and resets the count."""
+        async with get_db_connection() as conn:
+            if action == "set":
+                if channel is None:
+                    await interaction.response.send_message("❌ You must specify a channel to set.", ephemeral=True)
+                    return
+                # Set channel and reset count
+                await conn.execute(
+                    "INSERT INTO guild_config (guild_id, counting_channel_id, current_count, last_counter_id) VALUES (?, ?, 0, NULL) ON CONFLICT(guild_id) DO UPDATE SET counting_channel_id=excluded.counting_channel_id, current_count=0, last_counter_id=NULL",
+                    (interaction.guild.id, channel.id)
+                )
+                await interaction.response.send_message(f"✅ Counting channel has been set to {channel.mention}. The count starts at 1!", ephemeral=True)
+            else:  # Unset
+                await conn.execute("UPDATE guild_config SET counting_channel_id = NULL, current_count = 0, last_counter_id = NULL WHERE guild_id = ?", (interaction.guild.id,))
+                await interaction.response.send_message("✅ Counting channel has been unset.", ephemeral=True)
+            await conn.commit()
+
+
 async def setup(bot: commands.Bot):
     """The setup function to add this cog to the bot."""
     await bot.add_cog(SetupCommands(bot))
-
