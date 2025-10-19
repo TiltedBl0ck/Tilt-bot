@@ -26,13 +26,14 @@ class HelpCommand(commands.Cog):
         # Get the current server's configuration for status checks using an async context manager
         config = None
         async with get_db_connection() as conn:
-            cursor = await conn.execute("SELECT * FROM guild_config WHERE guild_id = ?", (interaction.guild_id,))
+            cursor = await conn.execute("SELECT * FROM guild_config WHERE guild_id = ?", (interaction.guild.id,))
             config = await cursor.fetchone()
 
         # Determine status for setup commands
         welcome_status = "✅" if config and config["welcome_channel_id"] else "❌"
         goodbye_status = "✅" if config and config["goodbye_channel_id"] else "❌"
         serverstats_status = "✅" if config and config["stats_category_id"] else "❌"
+        counting_status = "✅" if config and config["counting_channel_id"] else "❌"
 
         cogs_with_commands = {}
         # Exclude this cog and other handlers from the help menu
@@ -67,6 +68,8 @@ class HelpCommand(commands.Cog):
                                 sub_cmds_text.append(f"  `└ {sub.name}` {goodbye_status} - {sub.description}")
                             elif sub.name == "serverstats":
                                 sub_cmds_text.append(f"  `└ {sub.name}` {serverstats_status} - {sub.description}")
+                            elif sub.name == "counting":
+                                sub_cmds_text.append(f"  `└ {sub.name}` {counting_status} - {sub.description}")
                             else:
                                 sub_cmds_text.append(f"  `└ {sub.name}` - {sub.description}")
                         else:
@@ -99,4 +102,3 @@ class HelpCommand(commands.Cog):
 async def setup(bot: commands.Bot):
     """The setup function to add this cog to the bot."""
     await bot.add_cog(HelpCommand(bot))
-
