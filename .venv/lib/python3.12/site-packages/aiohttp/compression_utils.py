@@ -21,17 +21,16 @@ try:
 except ImportError:  # pragma: no cover
     HAS_BROTLI = False
 
-if sys.version_info >= (3, 14):
-    import compression.zstd  # noqa: I900
+try:
+    if sys.version_info >= (3, 14):
+        from compression.zstd import ZstdDecompressor  # noqa: I900
+    else:  # TODO(PY314): Remove mentions of backports.zstd across codebase
+        from backports.zstd import ZstdDecompressor
 
     HAS_ZSTD = True
-else:
-    try:
-        import zstandard
+except ImportError:
+    HAS_ZSTD = False
 
-        HAS_ZSTD = True
-    except ImportError:
-        HAS_ZSTD = False
 
 MAX_SYNC_CHUNK_SIZE = 1024
 
@@ -295,12 +294,9 @@ class ZSTDDecompressor:
         if not HAS_ZSTD:
             raise RuntimeError(
                 "The zstd decompression is not available. "
-                "Please install `zstandard` module"
+                "Please install `backports.zstd` module"
             )
-        if sys.version_info >= (3, 14):
-            self._obj = compression.zstd.ZstdDecompressor()
-        else:
-            self._obj = zstandard.ZstdDecompressor()
+        self._obj = ZstdDecompressor()
 
     def decompress_sync(self, data: bytes) -> bytes:
         return self._obj.decompress(data)

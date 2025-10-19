@@ -1,11 +1,10 @@
 Metadata-Version: 2.4
 Name: aiohttp
-Version: 3.13.0
+Version: 3.13.1
 Summary: Async http client/server framework (asyncio)
-Home-page: https://github.com/aio-libs/aiohttp
-Maintainer: aiohttp team <team@aiohttp.org>
-Maintainer-email: team@aiohttp.org
+Maintainer-email: aiohttp team <team@aiohttp.org>
 License: Apache-2.0 AND MIT
+Project-URL: Homepage, https://github.com/aio-libs/aiohttp
 Project-URL: Chat: Matrix, https://matrix.to/#/#aio-libs:matrix.org
 Project-URL: Chat: Matrix Space, https://matrix.to/#/#aio-libs-space:matrix.org
 Project-URL: CI: GitHub Actions, https://github.com/aio-libs/aiohttp/actions?query=workflow%3ACI
@@ -45,7 +44,7 @@ Provides-Extra: speedups
 Requires-Dist: aiodns>=3.3.0; extra == "speedups"
 Requires-Dist: Brotli; platform_python_implementation == "CPython" and extra == "speedups"
 Requires-Dist: brotlicffi; platform_python_implementation != "CPython" and extra == "speedups"
-Requires-Dist: zstandard; (platform_python_implementation == "CPython" and python_version < "3.14") and extra == "speedups"
+Requires-Dist: backports.zstd; (platform_python_implementation == "CPython" and python_version < "3.14") and extra == "speedups"
 Dynamic: license-file
 
 ==================================
