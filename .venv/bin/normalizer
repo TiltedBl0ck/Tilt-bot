@@ -1,5 +1,5 @@
 #!/bin/sh
-'''exec' "/home/tiltedblock/Desktop/Project Z/Project Tilt-bot-main/.venv/bin/python3" "$0" "$@"
+'''exec' "/mnt/Storage/Project Z/Project Tilt-bot-main/main/.venv/bin/python3" "$0" "$@"
 ' '''
 # -*- coding: utf-8 -*-
 import re
