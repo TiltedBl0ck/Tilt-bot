@@ -5,14 +5,14 @@ A comprehensive Discord bot with moderation, utility, AI, and management feature
 import asyncio
 import logging
 import os
-import json # Import the json module
+import json 
 from pathlib import Path
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 
-# Import the specific init_db function
-from cogs.utils.db import init_db
+# Import the specific db functions (updated for PostgreSQL)
+from cogs.utils.db import init_db, close_pool
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -49,7 +49,7 @@ class TiltBot(commands.Bot):
         """This hook is called when the bot is setting up."""
         logger.info("--- Starting Bot Setup ---")
         
-        # Initialize the database before loading cogs
+        # Initialize the database connection pool before loading cogs
         await init_db()
 
         # Load the central handler cog, which will then load all other cogs.
@@ -89,17 +89,18 @@ async def main() -> None:
     except KeyboardInterrupt:
         logger.info("Bot shutdown requested by user.")
     finally:
+        # Gracefully close the PostgreSQL connection pool
+        await close_pool()
+        
         if not bot.is_closed():
             await bot.close()
-        logger.info("Bot has been shut down. Clearing log file for next session.")
-
-        # This will safely close the logging handlers and then clear the file.
+            
+        logger.info("Bot has been shut down.")
+        
+        # This will safely close the logging handlers 
         logging.shutdown()
-        with open('bot.log', 'w') as f:
-            f.truncate(0)
 
 
 if __name__ == '__main__':
     # Run the bot
     asyncio.run(main())
-

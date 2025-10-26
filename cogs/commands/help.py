@@ -1,104 +1,129 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
-from datetime import datetime
-from cogs.utils.db import get_db_connection
 import logging
+# No database interaction needed in this version of help, so db import is removed
 
 logger = logging.getLogger(__name__)
 
-class HelpCommand(commands.Cog):
-    """A command to display all available bot commands."""
+# --- Views for Help Command ---
+
+class HelpDropdown(discord.ui.Select):
+    def __init__(self, bot: commands.Bot, mapping: dict):
+        self.bot = bot
+        self.mapping = mapping
+        options = [
+            discord.SelectOption(label="Home", description="Return to the main help overview.", emoji="🏠")
+        ]
+        # Add options for each cog with commands
+        for cog, commands_list in mapping.items():
+            if cog and commands_list: # Check if cog exists and has commands
+                cog_name = cog.qualified_name if hasattr(cog, 'qualified_name') else "Uncategorized"
+                emoji = getattr(cog, 'COG_EMOJI', '❓') # Use COG_EMOJI if defined in cog
+                options.append(discord.SelectOption(label=cog_name, description=f"Commands in {cog_name}", emoji=emoji))
+
+        super().__init__(placeholder="Choose a category...", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        selected_label = self.values[0]
+        embed = discord.Embed(title="Help Center", color=discord.Color.blue())
+
+        if selected_label == "Home":
+            embed.description = (
+                f"Welcome to **{self.bot.user.name}'s** Help Center!\n\n"
+                f"Use the dropdown menu below to explore command categories.\n"
+                f"My prefix is `!` but I primarily use Slash Commands (type `/`).\n\n"
+                f"**Need more help?**\n"
+                f"[Support Server](https://discord.gg/your_invite_link_here) | [GitHub Repository](https://github.com/TiltedBl0ck/Tilt-bot)" # TODO: Replace placeholder link
+            )
+            embed.set_thumbnail(url=self.bot.user.display_avatar.url)
+
+        else:
+            # Find the selected cog
+            target_cog = None
+            for cog, commands_list in self.mapping.items():
+                 if cog and commands_list:
+                    cog_name = cog.qualified_name if hasattr(cog, 'qualified_name') else "Uncategorized"
+                    if cog_name == selected_label:
+                        target_cog = cog
+                        break
+            
+            if target_cog:
+                cog_name = target_cog.qualified_name
+                embed.title = f"{getattr(target_cog, 'COG_EMOJI', '❓')} {cog_name} Commands"
+                description = target_cog.description or "No description provided."
+                
+                command_list_str = ""
+                # Get slash commands specifically (app_commands) associated with this cog
+                cog_commands = [cmd for cmd in self.bot.tree.get_commands() if cmd.binding == target_cog]
+                
+                # Also include traditional commands if any are in the cog (though slash is preferred)
+                prefix_commands = target_cog.get_commands()
+
+                if cog_commands:
+                    command_list_str += "**Slash Commands:**\n"
+                    for cmd in cog_commands:
+                        command_list_str += f"`/{cmd.name}` - {cmd.description}\n"
+                    command_list_str += "\n"
+
+                if prefix_commands:
+                    command_list_str += "**Prefix Commands (Legacy):**\n"
+                    for cmd in prefix_commands:
+                         command_list_str += f"`!{cmd.name}` - {cmd.short_doc or 'No description'}\n"
+                
+                embed.description = f"{description}\n\n{command_list_str or 'No commands found in this category.'}"
+            else:
+                 embed.description = "Could not find information for the selected category."
+
+
+        # Respond or edit the original message
+        try:
+            # Edit original if possible
+            await interaction.response.edit_message(embed=embed)
+        except discord.InteractionResponded:
+            # Fallback if edit fails (e.g., initial response)
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        except Exception as e:
+            logger.error(f"Error updating help message: {e}")
+            await interaction.followup.send("An error occurred while updating the help message.", ephemeral=True)
+
+
+class HelpView(discord.ui.View):
+    def __init__(self, bot: commands.Bot, mapping: dict):
+        super().__init__(timeout=180) # Timeout after 3 minutes
+        self.add_item(HelpDropdown(bot, mapping))
+
+# --- Help Command Cog ---
+class HelpCog(commands.Cog, name="Help"):
+    """Shows this help message."""
+    COG_EMOJI = "ℹ️"
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    async def build_help_embed(self, interaction: discord.Interaction) -> discord.Embed:
-        """Builds and returns the help embed with command statuses."""
+    @app_commands.command(name="help", description="Displays the interactive help menu.")
+    async def help_slash(self, interaction: discord.Interaction):
+        """Shows the main interactive help embed."""
+        mapping = self.bot.cogs # Get cog mapping
+
         embed = discord.Embed(
-            title="Tilt-Bot Help Menu",
-            description="Here is a list of all available commands:",
-            color=discord.Color.purple(),
-            timestamp=datetime.utcnow()
+            title="Help Center",
+            description=(
+                f"Welcome to **{self.bot.user.name}'s** Help Center!\n\n"
+                f"Use the dropdown menu below to explore command categories.\n"
+                f"My prefix is `!` but I primarily use Slash Commands (type `/`).\n\n"
+                f"**Need more help?**\n"
+                 f"[Support Server](https://discord.gg/your_invite_link_here) | [GitHub Repository](https://github.com/TiltedBl0ck/Tilt-bot)" # TODO: Replace placeholder link
+            ),
+            color=discord.Color.blue()
         )
-        if self.bot.user.display_avatar:
-            embed.set_thumbnail(url=self.bot.user.display_avatar.url)
+        embed.set_thumbnail(url=self.bot.user.display_avatar.url)
+        embed.set_footer(text=f"Bot Version: {self.bot.version}")
 
-        # Get the current server's configuration for status checks using an async context manager
-        config = None
-        async with get_db_connection() as conn:
-            cursor = await conn.execute("SELECT * FROM guild_config WHERE guild_id = ?", (interaction.guild.id,))
-            config = await cursor.fetchone()
-
-        # Determine status for setup commands
-        welcome_status = "✅" if config and config["welcome_channel_id"] else "❌"
-        goodbye_status = "✅" if config and config["goodbye_channel_id"] else "❌"
-        serverstats_status = "✅" if config and config["stats_category_id"] else "❌"
-        counting_status = "✅" if config and config["counting_channel_id"] else "❌"
-
-        cogs_with_commands = {}
-        # Exclude this cog and other handlers from the help menu
-        excluded_cogs = ["CommandHandler", "MemberEvents", "ErrorHandler", "HelpCommand", "Gemini"]
-        
-        # Add the Gemini cog manually to control its position and title
-        gemini_cog = self.bot.get_cog("Gemini")
-        if gemini_cog:
-            cogs_with_commands["AI Chat"] = gemini_cog.get_app_commands()
-
-        for name, cog in self.bot.cogs.items():
-            if name in excluded_cogs:
-                continue
-            
-            app_commands_in_cog = cog.get_app_commands()
-            if app_commands_in_cog:
-                # Use a more user-friendly name for the cog
-                cog_title = name.replace("Command", "").replace("Commands", "")
-                cogs_with_commands[cog_title] = app_commands_in_cog
-
-        for name, command_list in cogs_with_commands.items():
-            command_text = []
-            for cmd in command_list:
-                if isinstance(cmd, app_commands.Group):
-                    sub_cmds_text = []
-                    for sub in cmd.commands:
-                        # Add status indicators for specific setup commands
-                        if cmd.name == "setup":
-                            if sub.name == "welcome":
-                                sub_cmds_text.append(f"  `└ {sub.name}` {welcome_status} - {sub.description}")
-                            elif sub.name == "goodbye":
-                                sub_cmds_text.append(f"  `└ {sub.name}` {goodbye_status} - {sub.description}")
-                            elif sub.name == "serverstats":
-                                sub_cmds_text.append(f"  `└ {sub.name}` {serverstats_status} - {sub.description}")
-                            elif sub.name == "counting":
-                                sub_cmds_text.append(f"  `└ {sub.name}` {counting_status} - {sub.description}")
-                            else:
-                                sub_cmds_text.append(f"  `└ {sub.name}` - {sub.description}")
-                        else:
-                            sub_cmds_text.append(f"  `└ {sub.name}` - {sub.description}")
-                    
-                    sub_cmds_str = "\n".join(sub_cmds_text)
-                    command_text.append(f"`/{cmd.name}` - {cmd.description}\n{sub_cmds_str}")
-                else:
-                    command_text.append(f"`/{cmd.name}` - {cmd.description}")
-            
-            embed.add_field(name=f"**{name}**", value="\n".join(command_text), inline=False)
-        
-        # Add the bot version to the footer
-        embed.set_footer(text=f"Tilt-bot v{self.bot.version}")
-        
-        return embed
-
-    @app_commands.command(name="help", description="Displays a list of all available commands.")
-    async def help(self, interaction: discord.Interaction):
-        """Builds and sends an embed with all commands, sorted by cog."""
-        await interaction.response.defer(ephemeral=True)
-        
-        try:
-            embed = await self.build_help_embed(interaction)
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        except Exception as e:
-            logger.error(f"Error building help command: {e}", exc_info=True)
-            await interaction.followup.send("❌ An error occurred while building the help message.", ephemeral=True)
+        view = HelpView(self.bot, mapping)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 async def setup(bot: commands.Bot):
-    """The setup function to add this cog to the bot."""
-    await bot.add_cog(HelpCommand(bot))
+    await bot.add_cog(HelpCog(bot))
+    # Remove the old help command if it exists to avoid conflicts
+    bot.remove_command('help')

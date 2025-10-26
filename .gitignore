@@ -1,5 +1,6 @@
 # Ignore the file containing secret tokens.
 .env
+.env.example
 
 # Ignore the database file. It should not be on GitHub.
 Database.db
@@ -10,3 +11,6 @@ bot.log
 
 # Ignore Python's cache files.
 __pycache__/
+
+# Ignore
+.venv

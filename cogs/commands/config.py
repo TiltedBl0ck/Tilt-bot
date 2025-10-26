@@ -1,85 +1,115 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
-from cogs.utils.db import get_db_connection
+# Updated import: Use the new helper functions/pool from the asyncpg version
+from cogs.utils.db import pool, set_guild_config_value, get_guild_config 
 import logging
 
 logger = logging.getLogger(__name__)
 
-class ConfigCommands(commands.Cog):
-    """Commands for configuring server-specific bot settings."""
+# --- Modals for Configuration ---
+class WelcomeConfigModal(discord.ui.Modal, title='Configure Welcome Message'):
+    message = discord.ui.TextInput(
+        label='Welcome Message Template',
+        style=discord.TextStyle.paragraph,
+        placeholder='Example: Welcome {member} to {guild}! Enjoy your stay.',
+        required=True,
+        max_length=1000,
+    )
+
+    def __init__(self, guild_id: int):
+        super().__init__()
+        self.guild_id = guild_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        # Use the new database function
+        success = await set_guild_config_value(self.guild_id, 'welcome_message', self.message.value)
+        if success:
+            await interaction.response.send_message(f'✅ Welcome message updated!\n\n**Preview:**\n{self.message.value.format(member=interaction.user.mention, guild=interaction.guild.name)}', ephemeral=True)
+        else:
+            await interaction.response.send_message('❌ Failed to update the welcome message in the database.', ephemeral=True)
+
+
+class GoodbyeConfigModal(discord.ui.Modal, title='Configure Goodbye Message'):
+    message = discord.ui.TextInput(
+        label='Goodbye Message Template',
+        style=discord.TextStyle.paragraph,
+        placeholder='Example: Goodbye {member}. We hope to see you again!',
+        required=True,
+        max_length=1000,
+    )
+
+    def __init__(self, guild_id: int):
+        super().__init__()
+        self.guild_id = guild_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        # Use the new database function
+        success = await set_guild_config_value(self.guild_id, 'goodbye_message', self.message.value)
+        if success:
+             await interaction.response.send_message(f'✅ Goodbye message updated!\n\n**Preview:**\n{self.message.value.format(member=interaction.user.display_name)}', ephemeral=True) # Cannot mention user who left
+        else:
+            await interaction.response.send_message('❌ Failed to update the goodbye message in the database.', ephemeral=True)
+
+
+# --- Config Command Cog ---
+class ConfigCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    config_group = app_commands.Group(name="config", description="Configure bot settings for this server.")
+    config_group = app_commands.Group(name="config", description="Configure bot settings like welcome/goodbye messages.")
 
-    @config_group.command(name="welcome", description="Set the custom welcome message and image.")
-    @app_commands.describe(
-        message="The welcome message. Use {user.mention} to mention the user.",
-        image_url="An optional URL for a welcome image."
-    )
-    @app_commands.checks.has_permissions(administrator=True)
-    async def config_welcome(self, interaction: discord.Interaction, message: str, image_url: str = None):
-        """Updates the guild's welcome message configuration in the database."""
-        async with get_db_connection() as conn:
-            await conn.execute(
-                "INSERT INTO guild_config (guild_id, welcome_message, welcome_image) VALUES (?, ?, ?) ON CONFLICT(guild_id) DO UPDATE SET welcome_message=excluded.welcome_message, welcome_image=excluded.welcome_image",
-                (interaction.guild.id, message, image_url)
-            )
-            await conn.commit()
-            await interaction.response.send_message("✅ Welcome configuration has been updated!", ephemeral=True)
+    @config_group.command(name="welcome", description="Configure the welcome message.")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def config_welcome(self, interaction: discord.Interaction):
+        """Opens a modal to configure the server's welcome message."""
+        if not interaction.guild_id:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+            
+        # Check if welcome system is even set up
+        config = await get_guild_config(interaction.guild_id)
+        if not config or not config['welcome_channel_id']:
+            await interaction.response.send_message("The welcome system hasn't been set up yet. Use `/setup welcome` first.", ephemeral=True)
+            return
 
-    @config_group.command(name="goodbye", description="Set the custom goodbye message and image.")
-    @app_commands.describe(
-        message="The goodbye message. Use {user.name} for the user's name.",
-        image_url="An optional URL for a goodbye image."
-    )
-    @app_commands.checks.has_permissions(administrator=True)
-    async def config_goodbye(self, interaction: discord.Interaction, message: str, image_url: str = None):
-        """Updates the guild's goodbye message configuration in the database."""
-        async with get_db_connection() as conn:
-            await conn.execute(
-                "INSERT INTO guild_config (guild_id, goodbye_message, goodbye_image) VALUES (?, ?, ?) ON CONFLICT(guild_id) DO UPDATE SET goodbye_message=excluded.goodbye_message, goodbye_image=excluded.goodbye_image",
-                (interaction.guild.id, message, image_url)
-            )
-            await conn.commit()
-            await interaction.response.send_message("✅ Goodbye configuration has been updated!", ephemeral=True)
+        modal = WelcomeConfigModal(interaction.guild_id)
+        # Pre-fill modal if message exists
+        if config and config['welcome_message']:
+             modal.message.default = config['welcome_message']
+             
+        await interaction.response.send_modal(modal)
 
-    @config_group.command(name="serverstats", description="Toggle which server statistics to display.")
-    @app_commands.describe(
-        members="Show the member count channel.",
-        bots="Show the bot count channel.",
-        roles="Show the role count channel."
-    )
-    @app_commands.checks.has_permissions(administrator=True)
-    async def config_serverstats(self, interaction: discord.Interaction, members: bool, bots: bool, roles: bool):
-        """Updates the visibility of server stats channels."""
-        await interaction.response.defer(ephemeral=True)
-        try:
-            async with get_db_connection() as conn:
-                cursor = await conn.execute("SELECT * FROM guild_config WHERE guild_id = ?", (interaction.guild.id,))
-                config = await cursor.fetchone()
+    @config_group.command(name="goodbye", description="Configure the goodbye message.")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def config_goodbye(self, interaction: discord.Interaction):
+        """Opens a modal to configure the server's goodbye message."""
+        if not interaction.guild_id:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
 
-                if not config or not config["stats_category_id"]:
-                    await interaction.followup.send("❌ Please run `/setup serverstats` first to create the channels.", ephemeral=True)
-                    return
+        # Check if goodbye system is set up
+        config = await get_guild_config(interaction.guild_id)
+        if not config or not config['goodbye_channel_id']:
+            await interaction.response.send_message("The goodbye system hasn't been set up yet. Use `/setup goodbye` first.", ephemeral=True)
+            return
 
-                # Toggle channels based on user input
-                member_channel = interaction.guild.get_channel(config["member_count_channel_id"])
-                if member_channel: await member_channel.edit(view_permission=members)
-                
-                bot_channel = interaction.guild.get_channel(config["bot_count_channel_id"])
-                if bot_channel: await bot_channel.edit(view_permission=bots)
-                
-                role_channel = interaction.guild.get_channel(config["role_count_channel_id"])
-                if role_channel: await role_channel.edit(view_permission=roles)
+        modal = GoodbyeConfigModal(interaction.guild_id)
+        # Pre-fill modal if message exists
+        if config and config['goodbye_message']:
+             modal.message.default = config['goodbye_message']
+             
+        await interaction.response.send_modal(modal)
 
-                await interaction.followup.send("✅ Server stats visibility has been updated!", ephemeral=True)
-        except Exception as e:
-            logger.error(f"Error in config serverstats: {e}")
-            await interaction.followup.send("❌ An error occurred while updating the channels.", ephemeral=True)
+    @config_welcome.error
+    @config_goodbye.error
+    async def config_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if isinstance(error, app_commands.errors.MissingPermissions):
+            await interaction.response.send_message("You need the `Manage Server` permission to use this command.", ephemeral=True)
+        else:
+            logger.error(f"Error in config command: {error}")
+            await interaction.response.send_message("An unexpected error occurred.", ephemeral=True)
+
 
 async def setup(bot: commands.Bot):
-    """The setup function to add this cog to the bot."""
-    await bot.add_cog(ConfigCommands(bot))
-
+    await bot.add_cog(ConfigCog(bot))

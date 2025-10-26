@@ -1,55 +1,116 @@
-import aiosqlite
-from pathlib import Path
+import os
 import logging
-from contextlib import asynccontextmanager
+import json
+import asyncpg
 
+# Global variable to hold the connection pool instance
+pool = None
 logger = logging.getLogger(__name__)
-DB_PATH = Path(__file__).parent.parent.parent / "Database.db"
 
-async def init_db():
-    """Initializes the database schema if it doesn't exist."""
-    async with aiosqlite.connect(DB_PATH) as conn:
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS guild_config (
-            guild_id                  INTEGER PRIMARY KEY,
-            welcome_channel_id        INTEGER,
-            goodbye_channel_id        INTEGER,
-            welcome_message           TEXT,
-            welcome_image             TEXT,
-            goodbye_message           TEXT,
-            goodbye_image             TEXT,
-            stats_category_id         INTEGER,
-            member_count_channel_id   INTEGER,
-            bot_count_channel_id      INTEGER,
-            role_count_channel_id     INTEGER,
-            counting_channel_id       INTEGER,
-            current_count             INTEGER DEFAULT 0,
-            last_counter_id           INTEGER
+# --- Database Initialization ---
+
+async def init_db() -> None:
+    """Initializes the PostgreSQL connection pool and creates tables."""
+    global pool
+
+    # Load config to find the database DSN environment variable name
+    try:
+        with open('config.json', 'r') as f:
+            config = json.load(f)
+            dsn_env_var = config.get("database", {}).get("dsn_env_var", "POSTGRES_DSN")
+    except (FileNotFoundError, json.JSONDecodeError):
+        logger.error("Configuration file (config.json) not found or invalid.")
+        return
+
+    # Fetch the connection string (DSN)
+    dsn = os.getenv(dsn_env_var)
+    if not dsn:
+        logger.critical(f"Database DSN environment variable ('{dsn_env_var}') not set. PostgreSQL connection failed.")
+        return
+
+    logger.info("Attempting to connect to PostgreSQL database...")
+
+    try:
+        # Create a connection pool using the DSN
+        pool = await asyncpg.create_pool(
+            dsn=dsn,
+            min_size=1,  # Minimum connections to keep open
+            max_size=10  # Maximum concurrent connections
         )
+        logger.info("PostgreSQL connection pool established successfully.")
+
+        # Execute table creation queries
+        await create_tables()
+
+    except Exception as e:
+        logger.critical(f"Failed to connect to PostgreSQL or initialize tables: {e}")
+
+
+async def create_tables() -> None:
+    """Creates the necessary tables if they do not already exist."""
+    if pool is None:
+        logger.error("Cannot create tables: Database pool is not initialized.")
+        return
+
+    # Use a connection from the pool to execute the creation schema
+    async with pool.acquire() as conn:
+        # Guild Configuration Table (for welcome, stats, etc.)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS guild_config (
+                guild_id BIGINT PRIMARY KEY,
+                welcome_channel_id BIGINT DEFAULT NULL,
+                welcome_message TEXT DEFAULT 'Welcome {member} to {guild}!',
+                goodbye_channel_id BIGINT DEFAULT NULL,
+                goodbye_message TEXT DEFAULT 'Goodbye {member}. We will miss you!',
+                member_count_channel BIGINT DEFAULT NULL,
+                bot_count_channel BIGINT DEFAULT NULL,
+                counting_channel_id BIGINT DEFAULT NULL,
+                counting_next_number INTEGER DEFAULT 1,
+                counting_last_user_id BIGINT DEFAULT NULL
+            );
         """)
         
-        # Add new columns if they don't exist to avoid errors on existing databases.
-        try:
-            await conn.execute("ALTER TABLE guild_config ADD COLUMN counting_channel_id INTEGER")
-            await conn.execute("ALTER TABLE guild_config ADD COLUMN current_count INTEGER DEFAULT 0")
-            await conn.execute("ALTER TABLE guild_config ADD COLUMN last_counter_id INTEGER")
-            logger.info("Successfully added counting game columns to the database schema.")
-        except aiosqlite.OperationalError:
-            # This error means the columns already exist, which is fine.
-            pass
-            
-        await conn.commit()
-        logger.info("Database has been successfully initialized.")
+        # User Configuration Table (e.g., for user-specific settings, though this example uses guild context)
+        # You would typically add more specific tables here based on bot features.
+        
+        logger.info("Database tables verified and created if necessary.")
 
-@asynccontextmanager
-async def get_db_connection():
+# --- Helper Functions (Example usage, replace existing db interaction logic with this pattern) ---
+
+async def get_guild_config(guild_id: int):
+    """Fetches a guild's configuration from the database."""
+    if pool is None:
+        return None
+    
+    query = "SELECT * FROM guild_config WHERE guild_id = $1;"
+    # fetchrow returns a single record as a record object (like a dict)
+    record = await pool.fetchrow(query, guild_id)
+    return record
+
+
+async def update_welcome_channel(guild_id: int, channel_id: int):
+    """Inserts or updates the welcome channel ID for a guild."""
+    if pool is None:
+        return
+
+    # Use ON CONFLICT DO UPDATE to handle both inserts and updates efficiently
+    query = """
+        INSERT INTO guild_config (guild_id, welcome_channel_id) 
+        VALUES ($1, $2)
+        ON CONFLICT (guild_id) DO UPDATE SET 
+            welcome_channel_id = $2;
     """
-    Opens an asynchronous connection to the SQLite database as a context manager.
-    This ensures the connection is always closed properly.
-    """
-    conn = await aiosqlite.connect(DB_PATH)
-    conn.row_factory = aiosqlite.Row
-    try:
-        yield conn
-    finally:
-        await conn.close()
+    await pool.execute(query, guild_id, channel_id)
+
+
+# Function to close the pool gracefully on shutdown (use in main.py)
+async def close_pool():
+    """Closes the PostgreSQL connection pool."""
+    global pool
+    if pool:
+        await pool.close()
+        logger.info("PostgreSQL connection pool closed.")
+        pool = None
+
+# You will now replace all uses of aiosqlite in other cogs/files 
+# with calls to the global 'pool' object (e.g., pool.fetchval, pool.execute).

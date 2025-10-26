@@ -1,70 +1,109 @@
 import discord
 from discord.ext import commands
-from cogs.utils.db import get_db_connection
+# Updated imports
+from cogs.utils.db import pool, get_guild_config, set_guild_config_value
 import logging
 
 logger = logging.getLogger(__name__)
 
-class CountingGame(commands.Cog):
-    """Handles the logic for the server counting game."""
+class CountingCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """Listens for messages to check for counting game updates."""
-        # Ignore messages from bots or in DMs
+        # Ignore bot messages and DMs
         if message.author.bot or not message.guild:
             return
 
-        async with get_db_connection() as conn:
-            cursor = await conn.execute("SELECT counting_channel_id, current_count, last_counter_id FROM guild_config WHERE guild_id = ?", (message.guild.id,))
-            config = await cursor.fetchone()
+        # Check if the message is in a configured counting channel for this guild
+        guild_id = message.guild.id
+        config = await get_guild_config(guild_id) # Use the helper
 
-            # Proceed only if counting is set up for this server and message is in the correct channel
-            if not config or not config["counting_channel_id"] or config["counting_channel_id"] != message.channel.id:
-                return
+        # Check if config exists and counting channel is set
+        if not config or not config['counting_channel_id'] or message.channel.id != config['counting_channel_id']:
+            return
 
-            # Check if the message content is a valid integer
+        # Get expected number and last user from config
+        expected_number = config['counting_next_number']
+        last_user_id = config['counting_last_user_id']
+
+        # --- Input Validation ---
+        try:
+            # Check if message content is exactly the expected number
+            current_number = int(message.content.strip())
+        except ValueError:
+            # Not a valid number, delete if possible (optional)
+            # await message.delete()
+            # await message.channel.send(f"{message.author.mention}, that wasn't a valid number!", delete_after=5)
+            return # Ignore non-numeric messages silently for now
+
+        # --- Counting Logic ---
+        if current_number != expected_number:
+            # Incorrect number
             try:
-                number = int(message.content)
-            except ValueError:
-                # If the current count is 0, the first number must be 1. Delete any other message.
-                if config["current_count"] == 0 and message.content.strip() != "1":
-                    await message.delete()
-                    await message.channel.send(f"Wrong start, {message.author.mention}! The first number must be `1`.", delete_after=10)
-                return # If it's not a number, ignore it
+                await message.add_reaction("❌")
+                await message.reply(f"Wrong number! The next number was `{expected_number}`. Sequence reset.")
+            except discord.Forbidden:
+                 logger.warning(f"Missing permissions to react/reply in counting channel {message.channel.id} (Guild: {guild_id})")
+            except discord.HTTPException as e:
+                 logger.error(f"Failed to react/reply in counting channel {message.channel.id}: {e}")
+            
+            # Reset the count in the database
+            await set_guild_config_value(guild_id, 'counting_next_number', 1)
+            await set_guild_config_value(guild_id, 'counting_last_user_id', None) # Reset last user
 
-            # --- Game Logic ---
-            expected_number = (config["current_count"] or 0) + 1
+        elif message.author.id == last_user_id:
+            # Same user counted twice
+            try:
+                 await message.add_reaction("❌")
+                 await message.reply("You can't count twice in a row! Sequence reset.")
+            except discord.Forbidden:
+                 logger.warning(f"Missing permissions to react/reply in counting channel {message.channel.id} (Guild: {guild_id})")
+            except discord.HTTPException as e:
+                 logger.error(f"Failed to react/reply in counting channel {message.channel.id}: {e}")
+                 
+            # Reset the count in the database
+            await set_guild_config_value(guild_id, 'counting_next_number', 1)
+            await set_guild_config_value(guild_id, 'counting_last_user_id', None)
 
-            # Rule: The same user cannot count two numbers in a row.
-            if message.author.id == config["last_counter_id"]:
-                await message.delete()
-                await message.channel.send(f"You can't count twice in a row, {message.author.mention}! The next number is still `{expected_number}`.", delete_after=10)
-                return
+        else:
+            # Correct number and different user!
+            try:
+                await message.add_reaction("✅")
+            except discord.Forbidden:
+                logger.warning(f"Missing permissions to react in counting channel {message.channel.id} (Guild: {guild_id})")
+            except discord.HTTPException as e:
+                 logger.error(f"Failed to react in counting channel {message.channel.id}: {e}")
 
-            # Check if the number is correct
-            if number == expected_number:
-                # Correct! Update the database with the new count and the user who sent it.
-                await conn.execute(
-                    "UPDATE guild_config SET current_count = ?, last_counter_id = ? WHERE guild_id = ?",
-                    (number, message.author.id, message.guild.id)
-                )
-                await conn.commit()
-                await message.add_reaction("✅") # Give feedback that the number was correct
-            else:
-                # Wrong number! Reset the streak and notify the channel.
-                await conn.execute(
-                    "UPDATE guild_config SET current_count = 0, last_counter_id = NULL WHERE guild_id = ?",
-                    (message.guild.id,)
-                )
-                await conn.commit()
-                await message.add_reaction("❌") # Give feedback that the number was wrong
-                await message.channel.send(f"**Streak broken!** {message.author.mention} ruined it at **{config['current_count']}**. The next number is `1`.")
-                logger.info(f"Counting streak broken in {message.guild.name} by {message.author}.")
+
+            # Update the next number and last user in the database
+            next_num = expected_number + 1
+            await set_guild_config_value(guild_id, 'counting_next_number', next_num)
+            await set_guild_config_value(guild_id, 'counting_last_user_id', message.author.id)
+
+    # Optional: Listener to handle message deletions in counting channel
+    @commands.Cog.listener()
+    async def on_message_delete(self, message: discord.Message):
+         if message.author.bot or not message.guild:
+             return
+
+         guild_id = message.guild.id
+         config = await get_guild_config(guild_id)
+
+         if not config or not config['counting_channel_id'] or message.channel.id != config['counting_channel_id']:
+             return
+
+         # Simple approach: If a message is deleted, just notify and maybe reset?
+         # A more complex system would check if it was the *last* correct number.
+         # For now, let's just log it or send a warning.
+         logger.info(f"A message was deleted in counting channel {message.channel.id} (Guild: {guild_id}): '{message.content}' by {message.author}")
+         # Potentially send a message to the channel:
+         # try:
+         #    await message.channel.send(f"⚠️ A message by {message.author.mention} was deleted. Please ensure the count is still correct.", delete_after=10)
+         # except discord.Forbidden:
+         #     pass # Ignore if no perms
 
 
 async def setup(bot: commands.Bot):
-    """The setup function to add this cog to the bot."""
-    await bot.add_cog(CountingGame(bot))
+    await bot.add_cog(CountingCog(bot))

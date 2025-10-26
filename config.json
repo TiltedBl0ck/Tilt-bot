@@ -14,7 +14,7 @@
         "server_stats": true
     },
     "database": {
-        "path": "Database.db",
+        "dsn_env_var": "POSTGRES_DSN",
         "backup_enabled": true
     }
 }
