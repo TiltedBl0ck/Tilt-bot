@@ -1,6 +1,5 @@
 # Ignore the file containing secret tokens.
 .env
-.env.example
 
 # Ignore the database file. It should not be on GitHub.
 Database.db
