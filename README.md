@@ -17,48 +17,58 @@ Tilt-Bot is a modern, feature-rich, and easy-to-use Discord bot built with the l
 📚 Modern Help Command: A new, interactive help menu with dropdowns to easily browse command categories.
 
 🚀 Getting Started
+
 Prerequisites
+
 Python 3.10 or higher
 
 A Discord Bot Token
 
+A Gemini API Key to enable the AI chat feature.
+
 Installation & Setup
+
 Clone the Repository
 
 git clone [https://github.com/TiltedBl0ck/tilt-bot.git](https://github.com/TiltedBl0ck/tilt-bot.git)
 cd tilt-bot
 
+
 Install Dependencies
-It's recommended to use a virtual environment.
+It's strongly recommended to use a virtual environment to isolate the project dependencies.
 
 # Create and activate a virtual environment
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-# Install the required packages
+# Install the required packages (from requirements.txt)
 pip install -r requirements.txt
 
+
 Configure the Bot
-The bot uses a .env file to store your bot token.
+The bot uses a .env file to securely store your tokens.
 
 Find the file named .env.example.
 
 Create a copy of it and rename the copy to .env.
 
-Open the new .env file and add your secret token. Do not use spaces or quotes.
+Open the new .env file and replace the placeholder text with your actual tokens. Do not use spaces or quotes around the values.
 
-# Correct .env format
+Your .env file should look like this:
+
 BOT_TOKEN=your_discord_bot_token_here
+GEMINI_API_KEY=your_token_here
 
-You can get your BOT_TOKEN from the Discord Developer Portal.
 
 Run the Bot
 
 python main.py
 
+
 The bot should now be online and ready to go! The first time you run it, a Database.db file and a bot.log file will be created.
 
 Slash Command Overview
+
 Here is a list of the main commands available. Use the new /help command in your server for a complete, interactive breakdown!
 
 /help: Shows the main interactive help menu.

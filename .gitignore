@@ -10,3 +10,6 @@ bot.log
 
 # Ignore Python's cache files.
 __pycache__/
+
+# Ignore
+.venv
