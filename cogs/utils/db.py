@@ -1,31 +1,55 @@
-import asyncpg # Use asyncpg for PostgreSQL
-import logging
+import asyncpg
 import os
-import asyncio # Import asyncio for timeout handling
+import logging
+from dotenv import load_dotenv
 from contextlib import asynccontextmanager
-from typing import Optional, Any, Dict, List, Union
+from typing import Optional, Dict, Any, Union, Tuple
+import asyncio
 
+# --- Logging Setup ---
 logger = logging.getLogger(__name__)
 
-# Global variable to hold the connection pool
+# --- Load Environment Variables ---
+load_dotenv()
+POSTGRES_DSN = os.getenv('POSTGRES_DSN')
+
+# --- Global Connection Pool ---
+# Will be initialized by init_db()
 pool: Optional[asyncpg.Pool] = None
 
-async def init_db():
-    """Initializes the PostgreSQL database connection pool and schema."""
+# --- In-Memory Cache ---
+# Structure: {guild_id: {config_key: value, ...}}
+_config_cache: Dict[int, Dict[str, Any]] = {}
+_cache_lock = asyncio.Lock() # Lock for cache modifications
+
+# --- Database Initialization ---
+async def init_db() -> bool:
+    """Initializes the database connection pool and schema."""
     global pool
-    dsn = os.getenv('POSTGRES_DSN')
-    if not dsn:
-        logger.critical("POSTGRES_DSN environment variable not set. PostgreSQL connection failed.")
-        # Decide how to handle this - raise error, exit, or fallback?
-        # For now, we'll prevent the pool from being created.
-        return
+    if pool:
+        logger.warning("Database pool already initialized.")
+        return True # Indicate already initialized
+
+    if not POSTGRES_DSN:
+        logger.critical("POSTGRES_DSN environment variable not set!")
+        return False
 
     try:
-        # Lower the statement cache size if connection issues persist (especially on free tiers)
-        pool = await asyncpg.create_pool(dsn=dsn, min_size=1, max_size=5, statement_cache_size=50)
+        # Create connection pool
+        # Increase connection timeout if needed for Neon cold starts
+        pool = await asyncpg.create_pool(
+            dsn=POSTGRES_DSN,
+            min_size=1,
+            max_size=5, # Keep pool size modest
+            timeout=30, # Connection acquisition timeout
+            command_timeout=60 # Timeout for individual commands
+        )
+        if pool is None: # Check if pool creation actually succeeded
+             raise ConnectionError("Failed to create connection pool (pool is None).")
+
         logger.info("PostgreSQL connection pool established successfully.")
 
-        # Ensure the table and columns exist
+        # --- Schema Verification and Creation/Update ---
         async with pool.acquire() as conn:
             # Check if table exists
             table_exists = await conn.fetchval("""
@@ -35,214 +59,287 @@ async def init_db():
                 );
             """)
 
-            # Create table if it doesn't exist
             if not table_exists:
                 logger.info("guild_config table not found, creating...")
                 await conn.execute("""
-                    CREATE TABLE guild_config (
-                        guild_id                  BIGINT PRIMARY KEY, -- Use BIGINT for Discord IDs
-                        welcome_channel_id        BIGINT,
-                        goodbye_channel_id        BIGINT,
-                        welcome_message           TEXT,
-                        welcome_image             TEXT,
-                        goodbye_message           TEXT,
-                        goodbye_image             TEXT,
-                        stats_category_id         BIGINT,
-                        member_count_channel_id   BIGINT, -- Correct name with _id
-                        bot_count_channel_id      BIGINT, -- Correct name with _id
-                        role_count_channel_id     BIGINT, -- Correct name with _id
-                        counting_channel_id       BIGINT,
-                        current_count             INTEGER DEFAULT 0,
-                        last_counter_id           BIGINT
-                    );
+                CREATE TABLE guild_config (
+                    guild_id                  BIGINT PRIMARY KEY,
+                    welcome_channel_id        BIGINT,
+                    goodbye_channel_id        BIGINT,
+                    welcome_message           TEXT,
+                    welcome_image             TEXT,
+                    goodbye_message           TEXT,
+                    goodbye_image             TEXT,
+                    stats_category_id         BIGINT,
+                    member_count_channel_id   BIGINT,
+                    bot_count_channel_id      BIGINT,
+                    role_count_channel_id     BIGINT,
+                    counting_channel_id       BIGINT,
+                    current_count             INTEGER DEFAULT 0,
+                    last_counter_id           BIGINT
+                )
                 """)
-                logger.info("guild_config table created.")
+                logger.info("guild_config table created successfully.")
             else:
-                 # Table exists, check for old column names and rename if necessary
-                logger.info("guild_config table found, verifying schema...")
-                existing_columns_rows = await conn.fetch("""
-                    SELECT column_name
-                    FROM information_schema.columns
-                    WHERE table_schema = 'public' AND table_name = 'guild_config';
-                """)
-                existing_column_names = {col['column_name'] for col in existing_columns_rows}
+                logger.info("guild_config table found, verifying columns...")
+                # Get existing columns
+                rows = await conn.fetch("SELECT column_name FROM information_schema.columns WHERE table_name = 'guild_config' AND table_schema = 'public';")
+                existing_columns = {row['column_name'] for row in rows}
 
-                renames_to_attempt = {
+                # Define expected columns and their types (simplified for ADD COLUMN)
+                expected_columns = {
+                    "guild_id": "BIGINT", "welcome_channel_id": "BIGINT", "goodbye_channel_id": "BIGINT",
+                    "welcome_message": "TEXT", "welcome_image": "TEXT", "goodbye_message": "TEXT", "goodbye_image": "TEXT",
+                    "stats_category_id": "BIGINT", "member_count_channel_id": "BIGINT", "bot_count_channel_id": "BIGINT",
+                    "role_count_channel_id": "BIGINT", "counting_channel_id": "BIGINT",
+                    "current_count": "INTEGER DEFAULT 0", "last_counter_id": "BIGINT"
+                }
+
+                added_column = False
+                renamed_column = False
+
+                # Rename old columns first if they exist
+                rename_map = {
                     "member_count_channel": "member_count_channel_id",
                     "bot_count_channel": "bot_count_channel_id",
                     "role_count_channel": "role_count_channel_id",
-                    # Add other potential renames here if needed in the future
+                    # Add other potential renames here if necessary
                 }
-
-                renamed_any = False
-                for old_name, new_name in renames_to_attempt.items():
-                    if old_name in existing_column_names and new_name not in existing_column_names:
+                for old_name, new_name in rename_map.items():
+                     if old_name in existing_columns and new_name not in existing_columns:
                         try:
-                            await conn.execute(f'ALTER TABLE guild_config RENAME COLUMN "{old_name}" TO "{new_name}";')
+                            logger.info(f"Attempting to rename column '{old_name}' to '{new_name}'...")
+                            await conn.execute(f'ALTER TABLE guild_config RENAME COLUMN "{old_name}" TO "{new_name}"')
                             logger.info(f"Renamed column '{old_name}' to '{new_name}'.")
-                            existing_column_names.remove(old_name) # Update our set
-                            existing_column_names.add(new_name)
-                            renamed_any = True
+                            existing_columns.remove(old_name)
+                            existing_columns.add(new_name)
+                            renamed_column = True
                         except asyncpg.PostgresError as e:
                             logger.error(f"Failed to rename column '{old_name}' to '{new_name}': {e}")
-                    elif old_name in existing_column_names and new_name in existing_column_names:
-                         # This case is odd, implies both exist. Log a warning.
-                         logger.warning(f"Both '{old_name}' and '{new_name}' seem to exist in guild_config. No rename performed for this pair.")
 
-                if renamed_any:
-                     logger.info("Attempted schema renaming.")
 
-                # Check for and add missing columns (using the CORRECT names)
-                columns_to_ensure = {
-                    "guild_id": "BIGINT PRIMARY KEY", # Make sure PK is checked if table exists
-                    "welcome_channel_id": "BIGINT",
-                    "goodbye_channel_id": "BIGINT",
-                    "welcome_message": "TEXT",
-                    "welcome_image": "TEXT",
-                    "goodbye_message": "TEXT",
-                    "goodbye_image": "TEXT",
-                    "stats_category_id": "BIGINT",
-                    "member_count_channel_id": "BIGINT", # Correct name
-                    "bot_count_channel_id": "BIGINT",    # Correct name
-                    "role_count_channel_id": "BIGINT",   # Correct name
-                    "counting_channel_id": "BIGINT",
-                    "current_count": "INTEGER DEFAULT 0",
-                    "last_counter_id": "BIGINT"
-                    # Add any future columns here with correct names
-                }
-
-                added_columns = False
-                for col_name, col_type in columns_to_ensure.items():
-                     # Skip primary key check, assume it exists if table does
-                    if "PRIMARY KEY" in col_type:
-                        continue
-                    if col_name not in existing_column_names:
+                # Add missing columns
+                for col_name, col_type in expected_columns.items():
+                    if col_name not in existing_columns:
                         try:
-                            # Add IF NOT EXISTS just in case, though the check above should prevent errors
-                            await conn.execute(f"ALTER TABLE guild_config ADD COLUMN IF NOT EXISTS {col_name} {col_type};")
+                            logger.info(f"Adding missing column: {col_name}...")
+                            await conn.execute(f'ALTER TABLE guild_config ADD COLUMN "{col_name}" {col_type}')
                             logger.info(f"Added missing column: {col_name}")
-                            added_columns = True
+                            added_column = True
                         except asyncpg.PostgresError as e:
-                             logger.error(f"Error adding column {col_name}: {e}")
-                if added_columns:
-                     logger.info("Database schema updated with new columns.")
+                            logger.error(f"Failed to add column '{col_name}': {e}")
+
+
+                if not added_column and not renamed_column:
+                    logger.info("Database schema verified.")
                 else:
-                     logger.info("Database schema verified, no columns added.")
+                     logger.info("Database schema updated.")
+
 
         logger.info("Database initialization check complete.")
+        return True # Indicate success
 
-    except (asyncpg.PostgresError, OSError) as e:
-        logger.critical(f"Failed to connect to PostgreSQL or initialize schema: {e}", exc_info=True)
-        pool = None # Ensure pool is None if connection fails
+    except (asyncpg.PostgresError, OSError, ConnectionError) as e:
+        logger.critical(f"Database connection/initialization failed: {e}", exc_info=True)
+        pool = None # Ensure pool is None if init fails
+        return False
     except Exception as e:
         logger.critical(f"An unexpected error occurred during database initialization: {e}", exc_info=True)
         pool = None
+        return False
 
-
+# --- Close Pool ---
 async def close_pool():
-    """Closes the PostgreSQL connection pool."""
+    """Closes the database connection pool."""
     global pool
     if pool:
         try:
-            # Use wait_closed() for graceful shutdown
             await pool.close()
             logger.info("PostgreSQL connection pool closed.")
             pool = None
         except Exception as e:
-            logger.error(f"Error closing PostgreSQL pool: {e}", exc_info=True)
+            logger.error(f"Error closing connection pool: {e}", exc_info=True)
+    else:
+        logger.info("Connection pool was not initialized or already closed.")
 
+
+# --- Context Manager for Connections ---
 @asynccontextmanager
-async def get_db_connection() -> asyncpg.Connection:
+async def get_db_connection():
     """
-    Acquires a connection from the pool using an asynchronous context manager.
-    Raises an exception if the pool is not initialized.
+    Acquires a connection from the pool within an async context manager.
+    Includes timeout handling.
     """
     if pool is None:
-        logger.error("Database pool is not initialized. Cannot acquire connection.")
-        raise ConnectionError("Database pool is not initialized.") # Or handle differently
+        logger.error("Database pool is not initialized. Cannot get connection.")
+        raise ConnectionError("Database pool not available.")
 
-    conn: Optional[asyncpg.Connection] = None
+    conn = None
     try:
-        # Use a timeout for acquiring connection
-        conn = await asyncio.wait_for(pool.acquire(), timeout=10.0)
+        # Acquire connection with a timeout
+        conn = await asyncio.wait_for(pool.acquire(), timeout=15.0)
         yield conn
     except asyncio.TimeoutError:
-         logger.error("Timeout occurred while waiting to acquire database connection.")
-         raise ConnectionError("Timeout acquiring database connection.")
-    except asyncpg.PostgresError as e:
-        logger.error(f"Error acquiring or using database connection: {e}", exc_info=True)
-        raise # Re-raise database errors
-    except ConnectionError as e: # Catch if pool was None initially
-         logger.error(f"Connection error: {e}")
-         raise
+        logger.error("Timeout occurred while acquiring database connection from pool.")
+        raise ConnectionAbortedError("Timeout acquiring database connection.")
+    except (asyncpg.PostgresError, OSError) as e:
+         logger.error(f"Error acquiring or using database connection: {e}", exc_info=True)
+         raise # Re-raise the original exception
     finally:
         if conn:
-            # Use release with a timeout as well
-             try:
+            try:
+                # Release connection back to the pool
                 await asyncio.wait_for(pool.release(conn), timeout=5.0)
-             except asyncio.TimeoutError:
-                  logger.warning("Timeout occurred while releasing database connection.")
-             except Exception as e:
-                  logger.error(f"Error releasing database connection: {e}")
+            except asyncio.TimeoutError:
+                logger.error("Timeout occurred while releasing database connection back to pool.")
+            except Exception as e:
+                logger.error(f"Error releasing database connection: {e}", exc_info=True)
 
 
+# --- Cache Management ---
+async def invalidate_config_cache(guild_id: int):
+    """Removes a guild's configuration from the cache."""
+    async with _cache_lock:
+        if guild_id in _config_cache:
+            del _config_cache[guild_id]
+            logger.debug(f"Invalidated cache for guild {guild_id}")
+
+async def clear_all_config_cache():
+    """Clears the entire configuration cache."""
+    async with _cache_lock:
+        _config_cache.clear()
+        logger.info("Cleared all guild config cache.")
+
+# --- Data Access Functions ---
 async def get_guild_config(guild_id: int) -> Optional[Dict[str, Any]]:
-    """Fetches the configuration for a specific guild from PostgreSQL."""
-    if pool is None:
-        logger.error("Database pool not initialized, cannot get guild config.")
-        return None
+    """
+    Fetches guild configuration, using cache first.
+    Returns None if fetch fails or no config exists.
+    """
+    # 1. Check cache
+    async with _cache_lock:
+        cached_config = _config_cache.get(guild_id)
+        if cached_config is not None:
+             logger.debug(f"Cache hit for guild {guild_id}")
+             # Return a copy to prevent accidental modification of cached dict
+             return cached_config.copy()
+
+    logger.debug(f"Cache miss for guild {guild_id}, fetching from DB.")
+
+    # 2. Fetch from DB if not in cache
     try:
-        # Use fetchrow which returns a single Record or None
-        # asyncpg Record objects behave like dictionaries
-        async with get_db_connection() as conn: # Use the context manager
-            record = await conn.fetchrow("SELECT * FROM guild_config WHERE guild_id = $1", guild_id)
-            # Convert asyncpg Record to dict before returning
-            return dict(record) if record else None
-    except asyncpg.PostgresError as e:
-        logger.error(f"Error fetching config for guild {guild_id}: {e}", exc_info=True)
+        async with get_db_connection() as conn:
+            # fetchrow returns None if no row is found
+            config_record = await conn.fetchrow("SELECT * FROM guild_config WHERE guild_id = $1", guild_id)
+
+            if config_record:
+                # Convert asyncpg.Record to dict and store in cache
+                config_dict = dict(config_record)
+                async with _cache_lock:
+                    _config_cache[guild_id] = config_dict
+                logger.debug(f"Fetched and cached config for guild {guild_id}")
+                return config_dict # Return the fetched dict
+            else:
+                # Store an empty dict to indicate we checked and found nothing (avoids repeated DB hits for non-configured guilds)
+                # You might choose *not* to cache misses if you expect configs to appear often without bot interaction
+                async with _cache_lock:
+                    _config_cache[guild_id] = {} # Cache the miss
+                logger.debug(f"No config found for guild {guild_id}, cached miss.")
+                return None # Explicitly return None if no record found
+
+    except (ConnectionError, asyncpg.PostgresError) as e:
+        logger.error(f"Failed to fetch config for guild {guild_id}: {e}")
+        return None # Return None on DB error
+    except Exception as e:
+        logger.error(f"Unexpected error fetching config for guild {guild_id}: {e}", exc_info=True)
         return None
-    except ConnectionError as e: # Handle case where pool wasn't initialized or timed out
-         logger.error(f"Connection error fetching config for guild {guild_id}: {e}")
-         return None
+
+async def set_guild_config_value(guild_id: int, updates: Dict[str, Any]) -> bool:
+    """
+    Updates specific configuration values for a guild using UPSERT.
+    Invalidates the cache for the guild upon successful update.
+    Returns True on success, False on failure.
+    """
+    if not updates:
+        logger.warning("set_guild_config_value called with no updates.")
+        return False
+
+    # Filter out guild_id from updates if present, it's the conflict target
+    updates.pop('guild_id', None)
+
+    set_clauses = []
+    values = []
+    i = 1 # Start placeholders from $1
+
+    # Conflict target is guild_id ($1)
+    values.append(guild_id)
+
+    # Build SET clause and collect values for INSERT/UPDATE
+    for key, value in updates.items():
+        # Ensure key is a valid column name (basic check)
+        if not key.replace('_', '').isalnum():
+             logger.error(f"Invalid column name provided for update: {key}")
+             return False
+        set_clauses.append(f'"{key}" = ${i+1}') # Use EXCLUDED.column for upsert
+        values.append(value)
+        i += 1
+
+    if not set_clauses: # Should not happen if updates is not empty, but safeguard
+        logger.error("No valid update clauses generated.")
+        return False
+
+    set_clause_str = ", ".join(set_clauses)
+    update_clause_str = ", ".join(f'"{key}" = EXCLUDED."{key}"' for key in updates.keys()) # For ON CONFLICT
+    insert_cols = ["guild_id"] + list(updates.keys())
+    insert_cols_str = ", ".join(f'"{col}"' for col in insert_cols)
+    insert_placeholders = ", ".join(f"${j+1}" for j in range(len(insert_cols)))
 
 
-async def set_guild_config_value(guild_id: int, column: str, value: Any):
-    """Sets a specific configuration value for a guild in PostgreSQL."""
-    if pool is None:
-        logger.error("Database pool not initialized, cannot set guild config value.")
-        raise ConnectionError("Database pool is not initialized.")
-
-    # Validate column name to prevent SQL injection (important!)
-    allowed_columns = [
-        "guild_id", # Include primary key if you might update it (unlikely here)
-        "welcome_channel_id", "goodbye_channel_id", "welcome_message",
-        "welcome_image", "goodbye_message", "goodbye_image", "stats_category_id",
-        "member_count_channel_id", "bot_count_channel_id", "role_count_channel_id", # Correct names
-        "counting_channel_id", "current_count", "last_counter_id"
-    ]
-    if column not in allowed_columns:
-        logger.error(f"Attempted to set invalid config column: {column} for guild {guild_id}")
-        raise ValueError(f"Invalid configuration column specified: {column}")
+    sql = f"""
+        INSERT INTO guild_config ({insert_cols_str})
+        VALUES ({insert_placeholders})
+        ON CONFLICT (guild_id) DO UPDATE SET
+        {update_clause_str};
+    """
 
     try:
-        async with get_db_connection() as conn: # Use the context manager
-            # Use INSERT ... ON CONFLICT ... DO UPDATE for atomic upsert
-            # Note: $1 = guild_id, $2 = value for the specific column
-            # Use explicit EXCLUDED.column syntax for clarity and safety
-            # Ensure column name is correctly quoted in case it's a reserved keyword
-            # Using f-string for column name is safe *because* we validated it against allowed_columns
-            sql = f"""
-                INSERT INTO guild_config (guild_id, "{column}")
-                VALUES ($1, $2)
-                ON CONFLICT (guild_id) DO UPDATE SET
-                "{column}" = EXCLUDED."{column}";
-            """
-            await conn.execute(sql, guild_id, value)
-            logger.debug(f"Set config for guild {guild_id}: {column} = {value}")
-    except asyncpg.PostgresError as e:
-        logger.error(f"Error setting config for guild {guild_id} ({column}={value}): {e}", exc_info=True)
-        raise # Re-raise database errors
-    except ConnectionError as e: # Handle case where pool wasn't initialized or timed out
-         logger.error(f"Connection error setting config for guild {guild_id}: {e}")
-         raise
+        async with get_db_connection() as conn:
+            await conn.execute(sql, *values)
+        # Invalidate cache only after successful DB operation
+        await invalidate_config_cache(guild_id)
+        logger.info(f"Updated config for guild {guild_id}: {updates.keys()}")
+        return True
+    except (ConnectionError, asyncpg.PostgresError) as e:
+        logger.error(f"Failed to update config for guild {guild_id}: {e}")
+        return False
+    except Exception as e:
+         logger.error(f"Unexpected error updating config for guild {guild_id}: {e}", exc_info=True)
+         return False
+
+async def update_counting_stats(guild_id: int, current_count: int, last_counter_id: Optional[int]) -> bool:
+    """
+    Specifically updates counting game stats and invalidates cache.
+    Uses UPSERT to ensure the row exists.
+    Returns True on success, False on failure.
+    """
+    sql = """
+        INSERT INTO guild_config (guild_id, current_count, last_counter_id)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (guild_id) DO UPDATE SET
+        current_count = EXCLUDED.current_count,
+        last_counter_id = EXCLUDED.last_counter_id;
+    """
+    try:
+        async with get_db_connection() as conn:
+            await conn.execute(sql, guild_id, current_count, last_counter_id)
+        # Invalidate cache after successful DB operation
+        await invalidate_config_cache(guild_id)
+        logger.debug(f"Updated counting stats for guild {guild_id}: count={current_count}, last_counter={last_counter_id}")
+        return True
+    except (ConnectionError, asyncpg.PostgresError) as e:
+        logger.error(f"Failed to update counting stats for guild {guild_id}: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Unexpected error updating counting stats for guild {guild_id}: {e}", exc_info=True)
+        return False
 
