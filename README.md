@@ -1,92 +1,74 @@
-Tilt-Bot v2.0.0
-Tilt-Bot is a modern, feature-rich, and easy-to-use Discord bot built with the latest discord.py library. It leverages slash commands and an interactive UI for a seamless user experience.
+Tilt-bot Development
 
-✨ Features
-🤖 AI Chat: Have a conversation with the bot using a free Gemini API proxy from Puter.com. Just mention the bot or use the /chat command.
+This repository contains the source code for the Tilt-bot Discord bot.
 
-👋 Welcome & Goodbye: Automatically greet new members and say goodbye to those who leave with customizable messages and images.
+Setup Instructions
 
-📊 Server Stats: Set up voice channels that automatically display your server's member and bot counts.
+1. Prerequisites
 
-🛠️ Utility Commands: A full suite of tools to manage your server and get information, including /serverinfo, /userinfo, /avatar, and more.
+Python 3.10+ installed on your system.
 
-🛡️ Moderation: Simple and effective moderation tools, like /clear to bulk-delete messages.
+A Discord Bot Application created, and a Bot Token obtained.
 
-⚙️ Interactive Setup: Easy-to-use menus, dropdowns, and pop-up forms for configuring the bot without needing to remember complex commands.
+A Gemini API Key.
 
-📚 Modern Help Command: A new, interactive help menu with dropdowns to easily browse command categories.
+2. Virtual Environment Setup (Recommended)
 
-🚀 Getting Started
+It is highly recommended to use a virtual environment to manage dependencies.
 
-Prerequisites
+Create the virtual environment:
 
-Python 3.10 or higher
-
-A Discord Bot Token
-
-A Gemini API Key to enable the AI chat feature.
-
-Installation & Setup
-
-Clone the Repository
-
-git clone [https://github.com/TiltedBl0ck/tilt-bot.git](https://github.com/TiltedBl0ck/tilt-bot.git)
-cd tilt-bot
+python3 -m venv .venv
 
 
-Install Dependencies
-It's strongly recommended to use a virtual environment to isolate the project dependencies.
+Activate the virtual environment:
 
-# Create and activate a virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+Linux/macOS:
 
-# Install the required packages (from requirements.txt)
+source .venv/bin/activate
+
+
+Windows (Command Prompt):
+
+.venv\Scripts\activate.bat
+
+
+Windows (PowerShell):
+
+.venv\Scripts\Activate.ps1
+
+
+Note: You must run this command every time you open a new terminal session to work on the bot. If you see the name (.venv) prefixing your terminal prompt, the environment is active.
+
+3. Install Dependencies
+
+With the virtual environment activated, install the required Python packages:
+
 pip install -r requirements.txt
 
 
-Configure the Bot
-The bot uses a .env file to securely store your tokens.
+4. Configuration
 
-Find the file named .env.example.
+Create an environment file to store your sensitive tokens and keys.
 
-Create a copy of it and rename the copy to .env.
+Copy the example file:
 
-Open the new .env file and replace the placeholder text with your actual tokens. Do not use spaces or quotes around the values.
-
-Your .env file should look like this:
-
-BOT_TOKEN=your_discord_bot_token_here
-GEMINI_API_KEY=your_token_here
+cp .env.example .env
 
 
-Run the Bot
+Edit the newly created .env file and replace the placeholder values with your actual keys:
 
-python main.py
+# .env file content
+DISCORD_BOT_TOKEN="YOUR_DISCORD_BOT_TOKEN_HERE"
+GEMINI_API_KEY="YOUR_GEMINI_API_KEY_HERE"
+# Other configuration variables...
 
 
-The bot should now be online and ready to go! The first time you run it, a Database.db file and a bot.log file will be created.
+5. Running the Bot
 
-Slash Command Overview
+With your virtual environment activated and configuration set up, you can run the bot:
 
-Here is a list of the main commands available. Use the new /help command in your server for a complete, interactive breakdown!
+python3 main.py
 
-/help: Shows the main interactive help menu.
 
-/chat <prompt>: Talk to the bot's AI.
-
-/ping: Checks the bot's latency.
-
-/botinfo: Shows stats about Tilt-Bot.
-
-/serverinfo: Displays detailed information about the server.
-
-/userinfo [member]: Shows info about a specific user.
-
-/clear <count>: Deletes a specified number of messages.
-
-/setup <welcome/goodbye/serverstats>: Interactive menus to set up bot features.
-
-/config <welcome/goodbye>: Edit the content of your welcome/goodbye messages.
-
-This project is licensed under the MIT License.
+The contents of this README reflect the current state of the Tilt-bot development branch.
