@@ -19,10 +19,10 @@ class CommandHandler(commands.Cog):
         bot proceeds with syncing commands.
         """
         logger.info("--- Loading Extensions ---")
-        
+
         # Define directories and root files to load from
         cog_dirs = ["commands", "events"]
-        root_cogs = ["error_handler", "gemini"]
+        root_cogs = ["error_handler", "puter"]  # Changed from "gemini" to "puter"
 
         # Load cogs from subdirectories
         for cog_dir in cog_dirs:
@@ -49,4 +49,3 @@ class CommandHandler(commands.Cog):
 async def setup(bot: commands.Bot):
     """The setup function to add this cog to the bot."""
     await bot.add_cog(CommandHandler(bot))
-
