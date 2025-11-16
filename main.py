@@ -188,4 +188,3 @@ if __name__ == '__main__':
     except Exception as e:
          # Catch any other unexpected errors during the initial run call
          logger.critical(f"Critical error outside the main async loop: {e}", exc_info=True)
-
