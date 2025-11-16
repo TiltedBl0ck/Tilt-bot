@@ -33,7 +33,7 @@ end
 # Unset irrelevant variables.
 deactivate nondestructive
 
-set -gx VIRTUAL_ENV '/mnt/Storage/Project Z/Project Tilt-bot-main/dev/.venv'
+set -gx VIRTUAL_ENV '/mnt/Storage/Project Z/Project Tilt-bot-main/main/.venv'
 
 set -gx _OLD_VIRTUAL_PATH $PATH
 set -gx PATH "$VIRTUAL_ENV/"bin $PATH
