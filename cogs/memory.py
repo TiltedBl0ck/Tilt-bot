@@ -72,11 +72,8 @@ class Memory(commands.Cog):
         
         return "\n".join(lines)
 
-    # Memory Management Commands
-    @app_commands.group(name="memory", description="Manage bot memory and personal context")
-    async def memory_group(self, interaction: discord.Interaction):
-        """Memory management commands."""
-        pass
+    # Memory Management Commands - Using Group instead of group
+    memory_group = app_commands.Group(name="memory", description="Manage bot memory and personal context")
 
     @memory_group.command(name="set-name", description="Set bot name")
     @app_commands.describe(name="Bot name")
