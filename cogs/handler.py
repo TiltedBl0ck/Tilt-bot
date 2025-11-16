@@ -22,7 +22,7 @@ class CommandHandler(commands.Cog):
 
         # Define directories and root files to load from
         cog_dirs = ["commands", "events"]
-        root_cogs = ["error_handler", "puter"]  # Changed from "gemini" to "puter"
+        root_cogs = ["error_handler", "memory", "puter"]  # Added "memory" before "puter"
 
         # Load cogs from subdirectories
         for cog_dir in cog_dirs:
