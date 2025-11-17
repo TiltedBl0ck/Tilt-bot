@@ -29,6 +29,8 @@ class Puter(commands.Cog):
         self.serverinfo_cog = None
         self.last_login_time = 0
         self.login_cooldown = 3600  # 1 hour cooldown between logins
+        # Fallback models in case primary fails
+        self.fallback_models = ["gpt-4o-mini", "claude-3-5-sonnet-20241022", "meta-llama/Llama-3.3-70B-Instruct-Turbo"]
 
     async def ensure_authenticated(self):
         """Ensure Puter client is authenticated (with caching)."""
@@ -128,8 +130,8 @@ class Puter(commands.Cog):
         if len(history) > self.max_history:
             self.conversation_history[channel_id] = history[-self.max_history:]
 
-    async def get_puter_response(self, messages: list, model: str = "gpt-4o") -> str:
-        """Get response from Puter AI."""
+    async def get_puter_response(self, messages: list, model: str = "gpt-4o", attempt: int = 0) -> str:
+        """Get response from Puter AI with fallback support."""
         try:
             await self.ensure_authenticated()
             
@@ -160,12 +162,28 @@ class Puter(commands.Cog):
 
             return content or "No response generated"
 
-        except asyncio.TimeoutError:
-            logger.error("Puter API timeout")
-            return "❌ Puter API took too long to respond. Please try again."
         except Exception as e:
+            error_msg = str(e).lower()
+            
+            # Content moderation error - try fallback model
+            if "content moderation failed" in error_msg or "moderation" in error_msg:
+                logger.warning(f"Content moderation failed on model {model}, attempting fallback")
+                
+                if attempt < len(self.fallback_models):
+                    fallback_model = self.fallback_models[attempt]
+                    logger.info(f"Retrying with fallback model: {fallback_model}")
+                    return await self.get_puter_response(messages, fallback_model, attempt + 1)
+                else:
+                    return "⚠️ Your message was flagged by content moderation. Please try rephrasing it and avoiding sensitive language."
+            
+            # Timeout error
+            if "timeout" in error_msg:
+                logger.error("Puter API timeout")
+                return "❌ Puter API took too long to respond. Please try again."
+            
+            # Other errors
             logger.error(f"Puter API error: {e}")
-            return f"❌ Puter API error: {str(e)}"
+            return f"❌ Puter API error: {str(e)[:100]}"
 
     @app_commands.command(name="chat", description="Chat with Puter AI (with server awareness)")
     @app_commands.describe(prompt="Your question", model="AI model (default: gpt-4o)")
