@@ -6,6 +6,7 @@ import asyncio
 import os
 from collections import defaultdict
 import time
+from cogs.utils.web_search import web_search, search_and_summarize
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +20,7 @@ logger.info("Successfully configured Puter AI integration.")
 
 
 class Puter(commands.Cog):
-    """AI chat with internet search, conversation memory, personal context, and server awareness."""
+    """AI chat with web search, conversation memory, personal context, and server awareness."""
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.client = None
@@ -30,18 +31,12 @@ class Puter(commands.Cog):
         self.last_login_time = 0
         self.login_cooldown = 3600  # 1 hour cooldown between logins
         
-        # Primary models (with internet search capability)
-        self.internet_models = [
-            "perplexity/sonar",           # Standard internet search
-            "perplexity/sonar-pro",       # Advanced search
-            "perplexity/sonar-reasoning"  # Search with reasoning
-        ]
-        
-        # Fallback models (no internet, for when internet models fail)
-        self.fallback_models = [
-            "gpt-4o-mini", 
-            "claude-3-5-sonnet-20241022", 
-            "meta-llama/Llama-3.3-70B-Instruct-Turbo"
+        # Available models on Puter API
+        self.available_models = [
+            "gpt-4o",                    # Default - best quality
+            "gpt-4o-mini",               # Lightweight, fast
+            "claude-3-5-sonnet-20241022", # Alternative
+            "meta-llama/Llama-3.3-70B-Instruct-Turbo"  # Open source
         ]
 
     async def ensure_authenticated(self):
@@ -78,7 +73,7 @@ class Puter(commands.Cog):
         serverinfo_cog = self.bot.get_cog("ServerInfo")
         
         if not memory_cog:
-            return "You are a helpful Discord bot assistant with access to internet search capabilities."
+            return "You are a helpful Discord bot assistant with access to web search data."
         
         memory = memory_cog.memory
         
@@ -110,16 +105,22 @@ class Puter(commands.Cog):
             except Exception as e:
                 logger.debug(f"Could not get guild context: {e}")
         
-        system_msg += "\n\nYou have access to internet search. Use it to provide up-to-date information when relevant. Always stay in character and respond helpfully to server members."
+        system_msg += "\n\nYou have access to web search data. Use it to provide up-to-date information when available. Always stay in character and respond helpfully to server members."
         
         return system_msg
 
-    def get_conversation_context(self, channel_id: int, user_message: str, guild: discord.Guild = None) -> list:
-        """Build conversation context with history, memory, and server data."""
+    def get_conversation_context(self, channel_id: int, user_message: str, web_context: str = "", guild: discord.Guild = None) -> list:
+        """Build conversation context with history, memory, server data, and web search results."""
         history = self.conversation_history[channel_id]
         
         # ALWAYS include system message first (with guild context)
-        messages = [{"role": "system", "content": self.build_system_message(guild)}]
+        system_msg = self.build_system_message(guild)
+        
+        # Add web search context if available
+        if web_context:
+            system_msg += f"\n\nRecent Web Search Results:\n{web_context}"
+        
+        messages = [{"role": "system", "content": system_msg}]
         
         # Add conversation history (without system message)
         for msg in history:
@@ -142,8 +143,8 @@ class Puter(commands.Cog):
         if len(history) > self.max_history:
             self.conversation_history[channel_id] = history[-self.max_history:]
 
-    async def get_puter_response(self, messages: list, model: str = "perplexity/sonar", attempt: int = 0, is_internet_model: bool = True) -> str:
-        """Get response from Puter AI with internet search and fallback support."""
+    async def get_puter_response(self, messages: list, model: str = "gpt-4o", attempt: int = 0) -> str:
+        """Get response from Puter AI with fallback support."""
         try:
             await self.ensure_authenticated()
             
@@ -181,33 +182,23 @@ class Puter(commands.Cog):
             if "content moderation failed" in error_msg or "moderation" in error_msg:
                 logger.warning(f"Content moderation failed on model {model}, attempting fallback")
                 
-                # Try next internet model first
-                if is_internet_model and attempt < len(self.internet_models):
-                    fallback_model = self.internet_models[attempt]
-                    logger.info(f"Retrying with internet model: {fallback_model}")
-                    return await self.get_puter_response(messages, fallback_model, attempt + 1, is_internet_model=True)
-                
-                # Then try non-internet models
-                elif attempt < len(self.fallback_models):
-                    fallback_model = self.fallback_models[attempt]
-                    logger.info(f"Retrying with fallback model (no internet): {fallback_model}")
-                    return await self.get_puter_response(messages, fallback_model, attempt + 1, is_internet_model=False)
+                if attempt < len(self.available_models):
+                    fallback_model = self.available_models[attempt]
+                    logger.info(f"Retrying with fallback model: {fallback_model}")
+                    return await self.get_puter_response(messages, fallback_model, attempt + 1)
                 else:
                     return "⚠️ Your message was flagged by content moderation. Please try rephrasing it and avoiding sensitive language."
             
             # Model not available - try next one
-            if "not available" in error_msg or "not found" in error_msg or "invalid" in error_msg:
-                logger.warning(f"Model {model} not available, attempting fallback")
+            if "invalid" in error_msg or "not found" in error_msg or "not available" in error_msg:
+                logger.warning(f"Model {model} invalid, attempting fallback")
                 
-                if is_internet_model and attempt < len(self.internet_models):
-                    fallback_model = self.internet_models[attempt]
-                    logger.info(f"Trying next internet model: {fallback_model}")
-                    return await self.get_puter_response(messages, fallback_model, attempt + 1, is_internet_model=True)
-                
-                elif attempt < len(self.fallback_models):
-                    fallback_model = self.fallback_models[attempt]
+                if attempt < len(self.available_models):
+                    fallback_model = self.available_models[attempt]
                     logger.info(f"Trying fallback model: {fallback_model}")
-                    return await self.get_puter_response(messages, fallback_model, attempt + 1, is_internet_model=False)
+                    return await self.get_puter_response(messages, fallback_model, attempt + 1)
+                else:
+                    return "❌ All available models failed. Please check Puter API."
             
             # Timeout error
             if "timeout" in error_msg:
@@ -218,23 +209,34 @@ class Puter(commands.Cog):
             logger.error(f"Puter API error: {e}")
             return f"❌ Puter API error: {str(e)[:100]}"
 
-    @app_commands.command(name="chat", description="Chat with Puter AI (with internet search)")
-    @app_commands.describe(prompt="Your question", model="AI model: sonar (default), sonar-pro, sonar-reasoning, or standard models")
-    async def chat(self, interaction: discord.Interaction, prompt: str, model: str = "perplexity/sonar"):
-        """Chat command with internet search and server awareness."""
+    @app_commands.command(name="chat", description="Chat with Puter AI (with web search)")
+    @app_commands.describe(prompt="Your question", model="AI model (gpt-4o, gpt-4o-mini, claude, llama)", search="Search the web for info (yes/no)")
+    async def chat(self, interaction: discord.Interaction, prompt: str, model: str = "gpt-4o", search: str = "yes"):
+        """Chat command with context, server awareness, and web search."""
         await interaction.response.defer(thinking=True)
 
         try:
-            # Validate model - use internet models by default
-            if not model.startswith("perplexity/"):
-                model = "perplexity/sonar"  # Default to standard internet search
+            # Validate model
+            if model not in self.available_models and not any(m in model for m in ["gpt", "claude", "llama"]):
+                model = "gpt-4o"  # Default
+            
+            # Perform web search if requested
+            web_context = ""
+            if search.lower() in ["yes", "y", "true", "1"]:
+                try:
+                    logger.info(f"Searching web for: {prompt}")
+                    web_context = await search_and_summarize(prompt)
+                except Exception as e:
+                    logger.warning(f"Web search failed: {e}")
+                    web_context = ""
             
             messages = self.get_conversation_context(
                 interaction.channel_id, 
                 prompt,
+                web_context=web_context,
                 guild=interaction.guild
             )
-            response_text = await self.get_puter_response(messages, model, is_internet_model=True)
+            response_text = await self.get_puter_response(messages, model)
             self.update_history(interaction.channel_id, prompt, response_text)
 
             if len(response_text) > 1900:
@@ -248,7 +250,7 @@ class Puter(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """Handle mentions with context and internet search capability."""
+        """Handle mentions with context, server awareness, and web search."""
         if message.author.bot or not self.bot.user.mentioned_in(message):
             return
 
@@ -259,13 +261,20 @@ class Puter(commands.Cog):
                 return
 
             try:
+                # Search web for mentions
+                try:
+                    web_context = await search_and_summarize(prompt)
+                except Exception as e:
+                    logger.warning(f"Web search failed: {e}")
+                    web_context = ""
+                
                 messages = self.get_conversation_context(
                     message.channel.id, 
                     prompt,
+                    web_context=web_context,
                     guild=message.guild
                 )
-                # Use internet search by default for mentions
-                response_text = await self.get_puter_response(messages, "perplexity/sonar", is_internet_model=True)
+                response_text = await self.get_puter_response(messages, "gpt-4o")
                 self.update_history(message.channel.id, prompt, response_text)
 
                 if len(response_text) > 1900:
