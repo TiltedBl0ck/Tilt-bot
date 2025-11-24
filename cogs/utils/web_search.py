@@ -2,7 +2,6 @@ import logging
 import aiohttp
 import asyncio
 from bs4 import BeautifulSoup
-from duckduckgo_search import DDGS
 
 logger = logging.getLogger(__name__)
 
@@ -10,6 +9,8 @@ logger = logging.getLogger(__name__)
 async def web_search(query: str, max_results: int = 3) -> str:
     """Search the web using DuckDuckGo and return summarized results."""
     try:
+        from duckduckgo_search import DDGS
+        
         # Perform search
         results = DDGS().text(query, max_results=max_results)
         
@@ -24,8 +25,12 @@ async def web_search(query: str, max_results: int = 3) -> str:
             link = result.get('href', 'No link')
             summary += f"**{i}. {title}**\n{body}...\n🔗 {link}\n\n"
         
+        logger.info(f"Web search successful for: {query}")
         return summary
         
+    except ImportError:
+        logger.error("duckduckgo-search not installed")
+        return "Web search module not available."
     except Exception as e:
         logger.error(f"Web search error: {e}")
         return f"Search failed: {str(e)}"
@@ -60,4 +65,7 @@ async def fetch_url_content(url: str, timeout: int = 10) -> str:
 
 async def search_and_summarize(query: str) -> str:
     """Search the web and return context for AI."""
-    return await web_search(query)
+    logger.info(f"Starting web search for: {query}")
+    result = await web_search(query)
+    logger.info(f"Web search result length: {len(result)}")
+    return result
