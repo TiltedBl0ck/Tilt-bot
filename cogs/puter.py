@@ -19,7 +19,7 @@ logger.info("Successfully configured Puter AI integration.")
 
 
 class Puter(commands.Cog):
-    """AI chat with conversation memory, personal context, and server awareness."""
+    """AI chat with internet search, conversation memory, personal context, and server awareness."""
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.client = None
@@ -29,8 +29,20 @@ class Puter(commands.Cog):
         self.serverinfo_cog = None
         self.last_login_time = 0
         self.login_cooldown = 3600  # 1 hour cooldown between logins
-        # Fallback models in case primary fails
-        self.fallback_models = ["gpt-4o-mini", "claude-3-5-sonnet-20241022", "meta-llama/Llama-3.3-70B-Instruct-Turbo"]
+        
+        # Primary models (with internet search capability)
+        self.internet_models = [
+            "perplexity/sonar",           # Standard internet search
+            "perplexity/sonar-pro",       # Advanced search
+            "perplexity/sonar-reasoning"  # Search with reasoning
+        ]
+        
+        # Fallback models (no internet, for when internet models fail)
+        self.fallback_models = [
+            "gpt-4o-mini", 
+            "claude-3-5-sonnet-20241022", 
+            "meta-llama/Llama-3.3-70B-Instruct-Turbo"
+        ]
 
     async def ensure_authenticated(self):
         """Ensure Puter client is authenticated (with caching)."""
@@ -66,7 +78,7 @@ class Puter(commands.Cog):
         serverinfo_cog = self.bot.get_cog("ServerInfo")
         
         if not memory_cog:
-            return "You are a helpful Discord bot assistant."
+            return "You are a helpful Discord bot assistant with access to internet search capabilities."
         
         memory = memory_cog.memory
         
@@ -98,7 +110,7 @@ class Puter(commands.Cog):
             except Exception as e:
                 logger.debug(f"Could not get guild context: {e}")
         
-        system_msg += "\n\nAlways stay in character and respond helpfully to server members."
+        system_msg += "\n\nYou have access to internet search. Use it to provide up-to-date information when relevant. Always stay in character and respond helpfully to server members."
         
         return system_msg
 
@@ -130,8 +142,8 @@ class Puter(commands.Cog):
         if len(history) > self.max_history:
             self.conversation_history[channel_id] = history[-self.max_history:]
 
-    async def get_puter_response(self, messages: list, model: str = "gpt-4o", attempt: int = 0) -> str:
-        """Get response from Puter AI with fallback support."""
+    async def get_puter_response(self, messages: list, model: str = "perplexity/sonar", attempt: int = 0, is_internet_model: bool = True) -> str:
+        """Get response from Puter AI with internet search and fallback support."""
         try:
             await self.ensure_authenticated()
             
@@ -165,16 +177,37 @@ class Puter(commands.Cog):
         except Exception as e:
             error_msg = str(e).lower()
             
-            # Content moderation error - try fallback model
+            # Content moderation error - try next model
             if "content moderation failed" in error_msg or "moderation" in error_msg:
                 logger.warning(f"Content moderation failed on model {model}, attempting fallback")
                 
-                if attempt < len(self.fallback_models):
+                # Try next internet model first
+                if is_internet_model and attempt < len(self.internet_models):
+                    fallback_model = self.internet_models[attempt]
+                    logger.info(f"Retrying with internet model: {fallback_model}")
+                    return await self.get_puter_response(messages, fallback_model, attempt + 1, is_internet_model=True)
+                
+                # Then try non-internet models
+                elif attempt < len(self.fallback_models):
                     fallback_model = self.fallback_models[attempt]
-                    logger.info(f"Retrying with fallback model: {fallback_model}")
-                    return await self.get_puter_response(messages, fallback_model, attempt + 1)
+                    logger.info(f"Retrying with fallback model (no internet): {fallback_model}")
+                    return await self.get_puter_response(messages, fallback_model, attempt + 1, is_internet_model=False)
                 else:
                     return "⚠️ Your message was flagged by content moderation. Please try rephrasing it and avoiding sensitive language."
+            
+            # Model not available - try next one
+            if "not available" in error_msg or "not found" in error_msg or "invalid" in error_msg:
+                logger.warning(f"Model {model} not available, attempting fallback")
+                
+                if is_internet_model and attempt < len(self.internet_models):
+                    fallback_model = self.internet_models[attempt]
+                    logger.info(f"Trying next internet model: {fallback_model}")
+                    return await self.get_puter_response(messages, fallback_model, attempt + 1, is_internet_model=True)
+                
+                elif attempt < len(self.fallback_models):
+                    fallback_model = self.fallback_models[attempt]
+                    logger.info(f"Trying fallback model: {fallback_model}")
+                    return await self.get_puter_response(messages, fallback_model, attempt + 1, is_internet_model=False)
             
             # Timeout error
             if "timeout" in error_msg:
@@ -185,19 +218,23 @@ class Puter(commands.Cog):
             logger.error(f"Puter API error: {e}")
             return f"❌ Puter API error: {str(e)[:100]}"
 
-    @app_commands.command(name="chat", description="Chat with Puter AI (with server awareness)")
-    @app_commands.describe(prompt="Your question", model="AI model (default: gpt-4o)")
-    async def chat(self, interaction: discord.Interaction, prompt: str, model: str = "gpt-4o"):
-        """Chat command with conversation context and server awareness."""
+    @app_commands.command(name="chat", description="Chat with Puter AI (with internet search)")
+    @app_commands.describe(prompt="Your question", model="AI model: sonar (default), sonar-pro, sonar-reasoning, or standard models")
+    async def chat(self, interaction: discord.Interaction, prompt: str, model: str = "perplexity/sonar"):
+        """Chat command with internet search and server awareness."""
         await interaction.response.defer(thinking=True)
 
         try:
+            # Validate model - use internet models by default
+            if not model.startswith("perplexity/"):
+                model = "perplexity/sonar"  # Default to standard internet search
+            
             messages = self.get_conversation_context(
                 interaction.channel_id, 
                 prompt,
                 guild=interaction.guild
             )
-            response_text = await self.get_puter_response(messages, model)
+            response_text = await self.get_puter_response(messages, model, is_internet_model=True)
             self.update_history(interaction.channel_id, prompt, response_text)
 
             if len(response_text) > 1900:
@@ -211,7 +248,7 @@ class Puter(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """Handle mentions with context and server awareness."""
+        """Handle mentions with context and internet search capability."""
         if message.author.bot or not self.bot.user.mentioned_in(message):
             return
 
@@ -227,7 +264,8 @@ class Puter(commands.Cog):
                     prompt,
                     guild=message.guild
                 )
-                response_text = await self.get_puter_response(messages)
+                # Use internet search by default for mentions
+                response_text = await self.get_puter_response(messages, "perplexity/sonar", is_internet_model=True)
                 self.update_history(message.channel.id, prompt, response_text)
 
                 if len(response_text) > 1900:
