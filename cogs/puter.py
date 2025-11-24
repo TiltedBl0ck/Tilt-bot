@@ -6,7 +6,7 @@ import asyncio
 import os
 from collections import defaultdict
 import time
-from cogs.utils.web_search import web_search, search_and_summarize
+from cogs.utils.web_search import search_and_summarize, get_latest_info
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +73,7 @@ class Puter(commands.Cog):
         serverinfo_cog = self.bot.get_cog("ServerInfo")
         
         if not memory_cog:
-            return "You are a helpful Discord bot assistant with access to web search data."
+            return "You are a helpful Discord bot assistant. You have access to real-time web search results. Always use the web search information provided to give current, accurate answers."
         
         memory = memory_cog.memory
         
@@ -105,7 +105,7 @@ class Puter(commands.Cog):
             except Exception as e:
                 logger.debug(f"Could not get guild context: {e}")
         
-        system_msg += "\n\nYou have access to web search data. Use it to provide up-to-date information when available. Always stay in character and respond helpfully to server members."
+        system_msg += "\n\nIMPORTANT: You have access to real-time web search results. Use them to provide current, accurate information. When web search results are provided below, use them as your primary source for answering questions about current events, news, products, or recent information."
         
         return system_msg
 
@@ -116,9 +116,10 @@ class Puter(commands.Cog):
         # ALWAYS include system message first (with guild context)
         system_msg = self.build_system_message(guild)
         
-        # Add web search context if available
-        if web_context:
-            system_msg += f"\n\nRecent Web Search Results:\n{web_context}"
+        # Add web search context if available - THIS IS CRITICAL
+        if web_context and web_context.strip():
+            system_msg += f"\n\n**REAL-TIME WEB SEARCH RESULTS:**\n{web_context}"
+            system_msg += "\n\nBased on these current web search results, provide an accurate, up-to-date answer."
         
         messages = [{"role": "system", "content": system_msg}]
         
@@ -209,8 +210,8 @@ class Puter(commands.Cog):
             logger.error(f"Puter API error: {e}")
             return f"❌ Puter API error: {str(e)[:100]}"
 
-    @app_commands.command(name="chat", description="Chat with Puter AI (with web search)")
-    @app_commands.describe(prompt="Your question", model="AI model (gpt-4o, gpt-4o-mini, claude, llama)", search="Search the web for info (yes/no)")
+    @app_commands.command(name="chat", description="Chat with Puter AI (with live web search)")
+    @app_commands.describe(prompt="Your question", model="AI model (gpt-4o, gpt-4o-mini, claude, llama)", search="Use web search (yes/no)")
     async def chat(self, interaction: discord.Interaction, prompt: str, model: str = "gpt-4o", search: str = "yes"):
         """Chat command with context, server awareness, and web search."""
         await interaction.response.defer(thinking=True)
@@ -220,14 +221,18 @@ class Puter(commands.Cog):
             if model not in self.available_models and not any(m in model for m in ["gpt", "claude", "llama"]):
                 model = "gpt-4o"  # Default
             
-            # Perform web search if requested
+            # ALWAYS perform web search for current questions
             web_context = ""
             if search.lower() in ["yes", "y", "true", "1"]:
                 try:
-                    logger.info(f"Searching web for: {prompt}")
-                    web_context = await search_and_summarize(prompt)
+                    logger.info(f"🔍 Performing web search for: {prompt}")
+                    web_context = await get_latest_info(prompt)
+                    if web_context:
+                        logger.info(f"✅ Web search returned results")
+                    else:
+                        logger.warning(f"⚠️ Web search returned no results")
                 except Exception as e:
-                    logger.warning(f"Web search failed: {e}")
+                    logger.error(f"Web search failed: {e}")
                     web_context = ""
             
             messages = self.get_conversation_context(
@@ -261,12 +266,12 @@ class Puter(commands.Cog):
                 return
 
             try:
-                # Search web for mentions
-                try:
-                    web_context = await search_and_summarize(prompt)
-                except Exception as e:
-                    logger.warning(f"Web search failed: {e}")
-                    web_context = ""
+                # ALWAYS search web for mentions
+                logger.info(f"🔍 Mention triggered - performing web search for: {prompt}")
+                web_context = await get_latest_info(prompt)
+                
+                if not web_context:
+                    logger.warning(f"Web search returned no results for mention")
                 
                 messages = self.get_conversation_context(
                     message.channel.id, 
