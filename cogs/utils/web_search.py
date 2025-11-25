@@ -8,9 +8,10 @@ logger = logging.getLogger(__name__)
 
 
 async def web_search(query: str, max_results: int = 5) -> str:
-    """Search the web using DDGS (new package) and return detailed results."""
+    """Search the web using duckduckgo_search and return detailed results."""
     try:
-        from ddgs import DDGS  # NEW: Use ddgs instead of duckduckgo_search
+        # FIXED: Correct import for the standard library
+        from duckduckgo_search import DDGS
         
         logger.info(f"🔍 Starting web search for: {query}")
         
@@ -18,75 +19,66 @@ async def web_search(query: str, max_results: int = 5) -> str:
         if len(query) <= 3:
             search_query = query
         else:
-            # For longer queries, use filters
-            search_query = f'"{query}" -site:zhihu.com -site:mayo -site:medical'
+            # For longer queries, use filters to avoid low-quality sites
+            search_query = f'"{query}"'
         
         results = []
         try:
-            with DDGS() as ddgs:
-                results = list(ddgs.text(search_query, max_results=max_results + 2))
+            # Use the synchronous DDGS in an executor if needed, 
+            # but DDGS methods are sync by default in the library.
+            # We run it in a thread to avoid blocking Discord.
+            def run_search():
+                with DDGS() as ddgs:
+                    # .text() is the correct method for recent versions of duckduckgo-search
+                    return list(ddgs.text(search_query, max_results=max_results + 2))
+            
+            results = await asyncio.to_thread(run_search)
+            
         except Exception as search_err:
             logger.error(f"DDGS search error: {search_err}")
-            # Fallback to basic search
+            # Fallback to basic search without quotes/filters
             try:
-                with DDGS() as ddgs:
-                    results = list(ddgs.text(query, max_results=max_results))
-            except:
+                def run_fallback():
+                    with DDGS() as ddgs:
+                        return list(ddgs.text(query, max_results=max_results))
+                results = await asyncio.to_thread(run_fallback)
+            except Exception as e:
+                logger.error(f"Fallback search failed: {e}")
                 return None
         
-        if not results or len(results) == 0:
+        if not results:
             logger.warning(f"No search results for: {query}")
-            return None
-        
-        # Filter relevant results
-        filtered_results = []
-        query_words = set(query.lower().split())
-        
-        for result in results:
-            title = result.get('title', '').lower()
-            body = result.get('body', '').lower()
-            
-            # For short queries, be lenient
-            if len(query_words) <= 2:
-                filtered_results.append(result)
-            else:
-                # Check relevance - at least 1 word from query should match
-                matching_words = sum(1 for word in query_words if word in title or word in body)
-                if matching_words >= 1:
-                    filtered_results.append(result)
-            
-            if len(filtered_results) >= max_results:
-                break
-        
-        if not filtered_results:
-            logger.warning(f"No relevant results after filtering for: {query}")
             return None
         
         # Format detailed results
         summary = f"📚 **Search Results for '{query}':**\n\n"
         
-        for i, result in enumerate(filtered_results[:max_results], 1):
+        # Take the top results (filtering logic simplified for reliability)
+        count = 0
+        for result in results:
             try:
                 title = result.get('title', 'No title')
                 body = result.get('body', 'No description')
                 link = result.get('href', 'No link')
                 
-                # Clean up body text
-                body = body[:200] if body else "No description available"
-                body = re.sub(r'\s+', ' ', body).strip()
+                # Basic cleanup
+                if not body: continue
                 
-                summary += f"**{i}. {title}**\n"
+                summary += f"**{count + 1}. {title}**\n"
                 summary += f"{body}\n"
                 summary += f"Source: {link}\n\n"
+                count += 1
+                
+                if count >= max_results:
+                    break
             except Exception as e:
-                logger.error(f"Error processing result {i}: {e}")
                 continue
         
-        logger.info(f"✅ Web search successful - found {len(filtered_results)} relevant results")
-        return summary if summary != f"📚 **Search Results for '{query}':**\n\n" else None
+        logger.info(f"✅ Web search successful - found {count} results")
+        return summary
         
     except ImportError:
-        logger.error("❌ ddgs package not installed. Run: pip install ddgs")
+        logger.error("❌ duckduckgo-search package not installed. Run: pip install duckduckgo-search")
         return None
     except Exception as e:
         logger.error(f"❌ Web search error: {e}")
@@ -126,16 +118,19 @@ async def fetch_url_content(url: str, timeout: int = 10) -> str:
 
 async def search_and_summarize(query: str) -> str:
     """Search the web and return context for AI. Returns None if no results."""
-    logger.info(f"📡 Initiating web search for: '{query}'")
+    # Clean query for search (remove mentions of the bot)
+    clean_query = re.sub(r'<@!?\d+>', '', query).strip()
+    
+    logger.info(f"📡 Initiating web search for: '{clean_query}'")
     
     try:
-        result = await asyncio.wait_for(web_search(query), timeout=15.0)
+        result = await asyncio.wait_for(web_search(clean_query), timeout=15.0)
         
         if result:
             logger.info(f"✅ Web search returned results")
             return result
         else:
-            logger.warning(f"⚠️ Web search returned no results for: {query}")
+            logger.warning(f"⚠️ Web search returned no results for: {clean_query}")
             return None
             
     except asyncio.TimeoutError:

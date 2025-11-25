@@ -33,14 +33,13 @@ class Gemini(commands.Cog):
         self.max_history = 15
         
         # UPDATED MODEL LIST (Latest as of 2025)
-        # Note: Gemini 3.0 and 2.5 are not released yet. 
-        # We prioritize 2.0 Flash (Newest), then 1.5 Pro (Smartest), then 1.5 Flash (Most Stable).
+        # We try the newest models first, then fall back to stable ones
         self.model_list = [
-            "gemini-2.0-flash",          # The actual "new" model (formerly exp)
-            "gemini-2.0-flash-exp",      # Experimental version of 2.0
-            "gemini-1.5-pro",            # High intelligence fallback
-            "gemini-1.5-flash",          # High speed/stability fallback
-            "gemini-1.5-flash-8b"        # Ultra-fast fallback
+            "gemini-2.0-flash",          
+            "gemini-2.0-flash-exp",
+            "gemini-1.5-pro",
+            "gemini-1.5-flash",
+            "gemini-1.5-flash-8b"
         ]
         
         self.model_status = {model: "available" for model in self.model_list}
@@ -57,7 +56,13 @@ class Gemini(commands.Cog):
         memory_cog = self.bot.get_cog("Memory")
         serverinfo_cog = self.bot.get_cog("ServerInfo")
         
-        system_msg = "You are a helpful Discord bot. Provide accurate, helpful responses."
+        system_msg = (
+            "You are Tilt-bot, a helpful and intelligent Discord bot. "
+            "You have access to real-time information provided in the prompt context. "
+            "ALWAYS use the provided 'Search Results' to answer questions about current events, "
+            "prices, news, or factual queries. If the search results contain the answer, "
+            "state it clearly."
+        )
         
         if memory_cog:
             memory = memory_cog.memory
@@ -68,7 +73,7 @@ class Gemini(commands.Cog):
                     f"You are {memory.get('bot_name', 'Bot')}.",
                     f"Description: {memory.get('bot_description', 'A helpful AI')}",
                 ]
-                system_msg = "\n".join(lines)
+                system_msg += "\n" + "\n".join(lines)
         
         if guild and serverinfo_cog:
             try:
@@ -83,7 +88,6 @@ class Gemini(commands.Cog):
         contents = []
         for msg in history:
             role = "user" if msg["role"] == "user" else "model"
-            # Ensure content is never empty string, Gemini hates that
             text_content = msg["content"] if msg["content"] else "." 
             contents.append({"role": role, "parts": [text_content]})
         return contents
@@ -98,55 +102,89 @@ class Gemini(commands.Cog):
 
         final_prompt = user_message
         if web_context:
-            final_prompt = f"**Information from web search:**\n{web_context}\n\n**User Query:** {user_message}"
+            final_prompt = (
+                f"**LIVE WEB SEARCH RESULTS:**\n{web_context}\n\n"
+                f"**INSTRUCTIONS:** Use the above search results to answer the user's question.\n\n"
+                f"**USER QUESTION:** {user_message}"
+            )
 
         attempted_models = []
         
         for model_name in self.model_list:
             try:
-                # Setup Model
-                model = genai.GenerativeModel(
-                    model_name=model_name,
-                    system_instruction=system_instruction,
-                    safety_settings=self.safety_settings
-                )
-                
-                chat = model.start_chat(history=formatted_history)
-                
-                # Execute in thread to prevent blocking Discord
-                response = await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda: chat.send_message(final_prompt)
-                )
-                
-                self.model_status[model_name] = "available"
-                return response.text
+                # ---------------------------------------------------------
+                # ATTEMPT 1: Try with Native Google Search Tool
+                # ---------------------------------------------------------
+                try:
+                    model = genai.GenerativeModel(
+                        model_name=model_name,
+                        system_instruction=system_instruction,
+                        safety_settings=self.safety_settings,
+                        tools=[{"google_search": {}}] # Try native search
+                    )
+                    chat = model.start_chat(history=formatted_history)
+                    response = await asyncio.get_event_loop().run_in_executor(
+                        None, lambda: chat.send_message(final_prompt)
+                    )
+                    self.model_status[model_name] = "available"
+                    return response.text
 
+                # ---------------------------------------------------------
+                # ATTEMPT 2: Fallback (No Tools) if Attempt 1 fails
+                # ---------------------------------------------------------
+                except Exception as tool_error:
+                    # If it's a critical API error (like 429 Quota), don't retry, just fail
+                    if "429" in str(tool_error) or "quota" in str(tool_error).lower():
+                        raise tool_error
+
+                    # Otherwise, assume it's a library/tool error and retry without tools
+                    # logger.warning(f"Tool attempt failed for {model_name}, retrying basic: {tool_error}")
+                    
+                    model = genai.GenerativeModel(
+                        model_name=model_name,
+                        system_instruction=system_instruction,
+                        safety_settings=self.safety_settings
+                        # No tools
+                    )
+                    chat = model.start_chat(history=formatted_history)
+                    response = await asyncio.get_event_loop().run_in_executor(
+                        None, lambda: chat.send_message(final_prompt)
+                    )
+                    self.model_status[model_name] = "available (basic)"
+                    return response.text
+
+            # ---------------------------------------------------------
+            # ERROR HANDLING
+            # ---------------------------------------------------------
             except Exception as e:
                 error_str = str(e).lower()
                 
-                # Specific handling for Rate Limits
                 if "429" in error_str or "quota" in error_str or "exhausted" in error_str:
                     self.model_status[model_name] = "quota_exceeded"
-                    attempted_models.append(f"{model_name} (quota)")
+                    attempted_models.append(f"{model_name}: 🛑 Quota Exceeded")
                 
-                # Specific handling for "Model not found" (Old library or bad region)
                 elif "404" in error_str or "not found" in error_str:
                     self.model_status[model_name] = "not_found"
-                    attempted_models.append(f"{model_name} (not found)")
+                    attempted_models.append(f"{model_name}: ❓ Not Found")
+                
+                elif "400" in error_str or "invalid argument" in error_str:
+                     # This usually means the API key is invalid or model doesn't support params
+                    self.model_status[model_name] = "invalid_arg"
+                    attempted_models.append(f"{model_name}: ⚠️ Invalid Arg/Key")
                 
                 else:
                     logger.error(f"Error with {model_name}: {e}")
                     self.model_status[model_name] = "error"
-                    attempted_models.append(f"{model_name} (error)")
+                    # Capture a snippet of the actual error for debugging
+                    short_err = str(e)[:40]
+                    attempted_models.append(f"{model_name}: ❌ {short_err}...")
                 
-                # Short backoff before trying next model
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.5)
                 continue
 
         # If we reach here, all models failed
         status_report = "\n".join(attempted_models)
-        return f"⚠️ **AI Unavailable.**\n\nDebug Info:\n{status_report}\n\n*Tip: Run `pip install -U google-generativeai` to fix 'not found' errors.*"
+        return f"⚠️ **AI Unavailable.**\n\n**Debug Info:**\n{status_report}\n\n*Check your console logs for full details.*"
 
     def update_history(self, channel_id: int, user_message: str, ai_response: str):
         history = self.conversation_history[channel_id]
@@ -161,7 +199,7 @@ class Gemini(commands.Cog):
         await interaction.response.defer(thinking=True)
         try:
             web_context = ""
-            if len(prompt) > 5:
+            if len(prompt) > 4:
                 try:
                     if hasattr(get_latest_info, '__call__'):
                         web_context = await get_latest_info(prompt)
@@ -200,7 +238,7 @@ class Gemini(commands.Cog):
 
             web_context = ""
             try:
-                if len(prompt.split()) > 3 and hasattr(get_latest_info, '__call__'):
+                if len(prompt) > 4 and hasattr(get_latest_info, '__call__'):
                     web_context = await get_latest_info(prompt)
             except Exception:
                 pass
@@ -222,7 +260,13 @@ class Gemini(commands.Cog):
         status_msg = "🤖 **Gemini Model Status:**\n"
         for i, model in enumerate(self.model_list, 1):
             status = self.model_status.get(model, "unknown")
-            emoji = "✅" if status == "available" else "⚠️" if "quota" in status else "❌"
+            # Simple status check
+            if "available" in status:
+                emoji = "✅"
+            elif "quota" in status:
+                emoji = "⚠️"
+            else:
+                emoji = "❌"
             status_msg += f"{emoji} `{model}`: {status}\n"
         await interaction.response.send_message(status_msg, ephemeral=True)
 
