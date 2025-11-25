@@ -2,101 +2,27 @@ import logging
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
-import json
-import os
-from datetime import datetime, timedelta
-from typing import Optional, Literal
+from datetime import datetime
+from cogs.utils import db
 
 logger = logging.getLogger(__name__)
 
-# Store announcements in JSON file
-ANNOUNCEMENTS_FILE = "announcements.json"
-
-# Frequency choices
-FREQUENCY_CHOICES = [
-    app_commands.Choice(name="Every 30 Minutes", value="30min"),
-    app_commands.Choice(name="Every 1 Hour", value="1hr"),
-    app_commands.Choice(name="Every 3 Hours", value="3hrs"),
-    app_commands.Choice(name="Every 6 Hours", value="6hrs"),
-    app_commands.Choice(name="Every 12 Hours", value="12hrs"),
-    app_commands.Choice(name="Every 1 Day", value="1day"),
-    app_commands.Choice(name="Every 3 Days", value="3days"),
-    app_commands.Choice(name="Every 1 Week", value="1week"),
-    app_commands.Choice(name="Every 2 Weeks", value="2weeks"),
-    app_commands.Choice(name="Every 1 Month", value="1month"),
-]
-
 
 class Announcer(commands.Cog):
-    """DotNotify-style announcement system with recurring messages."""
+    """DotNotify-style announcement system with recurring messages - Database Backed."""
     
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.announcements = {}
-        self.announcement_counter = 0
-        self.load_announcements()
         self.send_announcements.start()
-    
-    def cog_unload(self):
-        self.send_announcements.cancel()
-    
-    def load_announcements(self):
-        """Load announcements from JSON file."""
-        if os.path.exists(ANNOUNCEMENTS_FILE):
-            try:
-                with open(ANNOUNCEMENTS_FILE, 'r') as f:
-                    data = json.load(f)
-                    self.announcements = data.get("announcements", {})
-                    self.announcement_counter = data.get("counter", 0)
-                logger.info(f"✅ Loaded {len(self.announcements)} announcements")
-            except Exception as e:
-                logger.error(f"Error loading announcements: {e}")
-        else:
-            self.announcements = {}
-            self.announcement_counter = 0
-    
-    def save_announcements(self):
-        """Save announcements to JSON file."""
-        try:
-            with open(ANNOUNCEMENTS_FILE, 'w') as f:
-                json.dump({
-                    "announcements": self.announcements,
-                    "counter": self.announcement_counter
-                }, f, indent=2)
-            logger.info("✅ Announcements saved")
-        except Exception as e:
-            logger.error(f"Error saving announcements: {e}")
-    
-    def get_next_run_time(self, frequency: str) -> datetime:
-        """Calculate next run time based on frequency."""
-        now = datetime.now()
-        
-        if frequency == "30min":
-            return now + timedelta(minutes=30)
-        elif frequency == "1hr":
-            return now + timedelta(hours=1)
-        elif frequency == "3hrs":
-            return now + timedelta(hours=3)
-        elif frequency == "6hrs":
-            return now + timedelta(hours=6)
-        elif frequency == "12hrs":
-            return now + timedelta(hours=12)
-        elif frequency == "1day":
-            return now + timedelta(days=1)
-        elif frequency == "3days":
-            return now + timedelta(days=3)
-        elif frequency == "1week":
-            return now + timedelta(weeks=1)
-        elif frequency == "2weeks":
-            return now + timedelta(weeks=2)
-        elif frequency == "1month":
-            return now + timedelta(days=30)
-        else:
-            return None
     
     def get_frequency_display(self, frequency: str) -> str:
         """Get human-readable frequency display."""
         freq_map = {
+            "1min": "Every 1 Minute",
+            "3min": "Every 3 Minutes",
+            "5min": "Every 5 Minutes",
+            "10min": "Every 10 Minutes",
+            "15min": "Every 15 Minutes",
             "30min": "Every 30 Minutes",
             "1hr": "Every 1 Hour",
             "3hrs": "Every 3 Hours",
@@ -110,47 +36,43 @@ class Announcer(commands.Cog):
         }
         return freq_map.get(frequency, frequency)
     
+    def cog_unload(self):
+        self.send_announcements.cancel()
+    
     @tasks.loop(minutes=1)
     async def send_announcements(self):
         """Check and send announcements on schedule."""
-        now = datetime.now().isoformat()
-        
-        announcements_to_remove = []
-        
-        for ann_id, announcement in self.announcements.items():
-            try:
-                next_run = announcement.get("next_run")
-                
-                if next_run and next_run <= now:
-                    channel_id = announcement.get("channel_id")
-                    message = announcement.get("message")
-                    frequency = announcement.get("frequency")
+        try:
+            announcements = await db.get_due_announcements()
+            
+            for ann in announcements:
+                try:
+                    channel = self.bot.get_channel(ann['channel_id'])
                     
-                    channel = self.bot.get_channel(channel_id)
                     if channel:
-                        # Send the announcement
-                        await channel.send(message)
-                        logger.info(f"✅ Sent announcement {ann_id}")
+                        # Verify channel is in correct server (security check)
+                        if channel.guild.id != ann['server_id']:
+                            logger.warning(f"Security: Announcement {ann['id']} channel not in correct server")
+                            continue
+                        
+                        try:
+                            await channel.send(ann['message'])
+                            logger.info(f"✅ Sent announcement {ann['id']}")
+                        except Exception as e:
+                            logger.error(f"Failed to send announcement {ann['id']}: {e}")
                         
                         # Calculate next run time
-                        if frequency:
-                            next_run_dt = self.get_next_run_time(frequency)
-                            if next_run_dt:
-                                announcement["next_run"] = next_run_dt.isoformat()
-                                self.save_announcements()
+                        await db.update_announcement_next_run(ann['id'], ann['frequency'])
                     else:
-                        logger.warning(f"Channel {channel_id} not found for announcement {ann_id}")
-                        announcements_to_remove.append(ann_id)
-            
-            except Exception as e:
-                logger.error(f"Error sending announcement {ann_id}: {e}")
+                        logger.warning(f"Channel {ann['channel_id']} not found for announcement {ann['id']}")
+                        # Mark as inactive if channel doesn't exist
+                        await db.mark_announcement_inactive(ann['id'])
+                
+                except Exception as e:
+                    logger.error(f"Error processing announcement {ann['id']}: {e}")
         
-        # Remove announcements with invalid channels
-        for ann_id in announcements_to_remove:
-            del self.announcements[ann_id]
-        
-        if announcements_to_remove:
-            self.save_announcements()
+        except Exception as e:
+            logger.error(f"Error in send_announcements task: {e}")
     
     @send_announcements.before_loop
     async def before_send_announcements(self):
@@ -163,143 +85,234 @@ class Announcer(commands.Cog):
     @announce_group.command(name="create", description="Create a recurring announcement")
     @app_commands.describe(
         message="Message to announce",
-        channel="Channel to send to",
-        frequency="How often to send the announcement"
+        channel="Channel to send to"
     )
-    @app_commands.choices(frequency=FREQUENCY_CHOICES)
     async def announce_create(
         self, 
         interaction: discord.Interaction, 
         message: str, 
-        channel: discord.TextChannel,
-        frequency: app_commands.Choice[str]
+        channel: discord.TextChannel
     ):
         """Create a new announcement."""
         await interaction.response.defer(ephemeral=True)
+        
+        # Security: Check if user has permissions in this server
+        if not channel.permissions_for(interaction.user).send_messages:
+            await interaction.followup.send("❌ You don't have permission to send messages in that channel")
+            return
         
         # Validate message length
         if len(message) > 1900:
             await interaction.followup.send("❌ Message too long (max 1900 characters)")
             return
         
-        # Create announcement
-        self.announcement_counter += 1
-        ann_id = str(self.announcement_counter)
-        
-        now = datetime.now()
-        freq_value = frequency.value
-        next_run = self.get_next_run_time(freq_value)
-        
-        self.announcements[ann_id] = {
-            "id": ann_id,
-            "message": message,
-            "channel_id": channel.id,
-            "frequency": freq_value,
-            "created_at": now.isoformat(),
-            "next_run": next_run.isoformat() if next_run else None
-        }
-        
-        self.save_announcements()
-        
-        # Format response
-        next_run_display = next_run.strftime("%Y-%m-%d %H:%M") if next_run else "N/A"
-        freq_display = self.get_frequency_display(freq_value)
-        
-        embed = discord.Embed(
-            title="✅ Announcement Created",
-            description=f"**ID:** `{ann_id}`\n**Channel:** {channel.mention}\n**Frequency:** {freq_display}\n**Next Send:** {next_run_display}",
-            color=discord.Color.green()
-        )
-        embed.add_field(name="Message Preview", value=message[:200] + ("..." if len(message) > 200 else ""), inline=False)
-        
-        await interaction.followup.send(embed=embed)
+        try:
+            # Send confirmation with frequency selector
+            embed = discord.Embed(
+                title="📢 Select Announcement Frequency",
+                description=f"**Server:** {interaction.guild.name}\n**Channel:** {channel.mention}\n**Message Preview:** {message[:150]}{'...' if len(message) > 150 else ''}",
+                color=discord.Color.blue()
+            )
+            
+            # Create select menu for frequency
+            class FrequencySelect(discord.ui.Select):
+                def __init__(self, parent_cog, msg, ch, guild_id, user_id):
+                    self.parent_cog = parent_cog
+                    self.message = msg
+                    self.channel = ch
+                    self.guild_id = guild_id
+                    self.user_id = user_id
+                    options = [
+                        discord.SelectOption(label="Every 1 Minute", value="1min", emoji="⏱️"),
+                        discord.SelectOption(label="Every 3 Minutes", value="3min", emoji="⏱️"),
+                        discord.SelectOption(label="Every 5 Minutes", value="5min", emoji="⏱️"),
+                        discord.SelectOption(label="Every 10 Minutes", value="10min", emoji="⏱️"),
+                        discord.SelectOption(label="Every 15 Minutes", value="15min", emoji="⏱️"),
+                        discord.SelectOption(label="Every 30 Minutes", value="30min", emoji="⏰"),
+                        discord.SelectOption(label="Every 1 Hour", value="1hr", emoji="🕐"),
+                        discord.SelectOption(label="Every 3 Hours", value="3hrs", emoji="🕐"),
+                        discord.SelectOption(label="Every 6 Hours", value="6hrs", emoji="🕐"),
+                        discord.SelectOption(label="Every 12 Hours", value="12hrs", emoji="🕑"),
+                        discord.SelectOption(label="Every 1 Day", value="1day", emoji="📅"),
+                        discord.SelectOption(label="Every 3 Days", value="3days", emoji="📅"),
+                        discord.SelectOption(label="Every 1 Week", value="1week", emoji="📆"),
+                        discord.SelectOption(label="Every 2 Weeks", value="2weeks", emoji="📆"),
+                        discord.SelectOption(label="Every 1 Month", value="1month", emoji="📆"),
+                    ]
+                    super().__init__(
+                        placeholder="Choose frequency...",
+                        min_values=1,
+                        max_values=1,
+                        options=options
+                    )
+                
+                async def callback(self, inter: discord.Interaction):
+                    freq_value = self.values[0]
+                    
+                    try:
+                        await inter.response.defer()
+                        
+                        # Create announcement in database
+                        ann_id = await db.create_announcement(
+                            self.guild_id,
+                            self.channel.id,
+                            self.message,
+                            freq_value,
+                            self.user_id
+                        )
+                        
+                        if ann_id is None:
+                            await inter.followup.send("❌ Failed to create announcement", ephemeral=True)
+                            return
+                        
+                        # Send message immediately to the channel
+                        try:
+                            await self.channel.send(self.message)
+                            logger.info(f"✅ Sent initial announcement {ann_id}")
+                        except Exception as e:
+                            logger.error(f"Failed to send initial announcement {ann_id}: {e}")
+                        
+                        # Format response
+                        next_run = db.get_next_run_time(freq_value)
+                        next_run_display = next_run.strftime("%Y-%m-%d %H:%M") if next_run else "N/A"
+                        freq_display = self.parent_cog.get_frequency_display(freq_value)
+                        
+                        success_embed = discord.Embed(
+                            title="✅ Announcement Created",
+                            description=f"**ID:** `{ann_id}`\n**Channel:** {self.channel.mention}\n**Frequency:** {freq_display}\n**Next Send:** {next_run_display}",
+                            color=discord.Color.green()
+                        )
+                        success_embed.add_field(name="Message Preview", value=self.message[:200] + ("..." if len(self.message) > 200 else ""), inline=False)
+                        
+                        await inter.followup.send(embed=success_embed)
+                    except Exception as e:
+                        logger.error(f"Error in frequency select: {e}")
+                        try:
+                            await inter.followup.send(f"❌ Error: {str(e)[:100]}", ephemeral=True)
+                        except:
+                            pass
+            
+            # Create view with select menu
+            class FrequencyView(discord.ui.View):
+                def __init__(self, parent_cog, msg, ch, guild_id, user_id):
+                    super().__init__(timeout=300)
+                    self.add_item(FrequencySelect(parent_cog, msg, ch, guild_id, user_id))
+            
+            view = FrequencyView(self, message, channel, interaction.guild.id, interaction.user.id)
+            await interaction.followup.send(embed=embed, view=view)
+            
+        except Exception as e:
+            logger.error(f"Error in create command: {e}")
+            try:
+                await interaction.followup.send(f"❌ Error: {str(e)[:100]}")
+            except:
+                pass
     
     @announce_group.command(name="list", description="List all announcements")
     async def announce_list(self, interaction: discord.Interaction):
-        """List all active announcements."""
+        """List all active announcements for this server."""
         await interaction.response.defer(ephemeral=True)
         
-        if not self.announcements:
-            await interaction.followup.send("❌ No announcements scheduled")
-            return
-        
-        # Build announcement list
-        embed = discord.Embed(
-            title="📢 Active Announcements",
-            description=f"Total: {len(self.announcements)}",
-            color=discord.Color.blue()
-        )
-        
-        for ann_id, announcement in list(self.announcements.items())[:10]:  # Max 10 per embed
-            channel_id = announcement.get("channel_id")
-            frequency = announcement.get("frequency", "unknown")
-            next_run = announcement.get("next_run", "N/A")
-            message = announcement.get("message", "No message")
+        try:
+            announcements = await db.get_announcements_by_server(interaction.guild.id)
             
-            channel = self.bot.get_channel(channel_id)
-            channel_name = channel.mention if channel else f"(Unknown #{channel_id})"
+            if not announcements:
+                await interaction.followup.send("❌ No announcements scheduled")
+                return
             
-            if next_run != "N/A":
-                next_run_dt = datetime.fromisoformat(next_run)
-                next_run_display = next_run_dt.strftime("%m-%d %H:%M")
-            else:
-                next_run_display = "N/A"
+            # Build announcement list
+            embed = discord.Embed(
+                title="📢 Active Announcements",
+                description=f"Server: {interaction.guild.name}\nTotal: {len(announcements)}",
+                color=discord.Color.blue()
+            )
             
-            freq_display = self.get_frequency_display(frequency)
-            field_value = f"**Channel:** {channel_name}\n**Frequency:** {freq_display}\n**Next Send:** {next_run_display}\n**Message:** {message[:100]}{'...' if len(message) > 100 else ''}"
-            embed.add_field(name=f"ID: {ann_id}", value=field_value, inline=False)
-        
-        if len(self.announcements) > 10:
-            embed.set_footer(text=f"Showing 10 of {len(self.announcements)} announcements")
-        
-        await interaction.followup.send(embed=embed)
+            for ann in announcements:
+                channel_id = ann['channel_id']
+                frequency = ann['frequency']
+                next_run = ann['next_run']
+                message = ann['message']
+                
+                channel = self.bot.get_channel(channel_id)
+                channel_name = channel.mention if channel else f"(Unknown #{channel_id})"
+                
+                if next_run:
+                    try:
+                        next_run_display = next_run.strftime("%m-%d %H:%M")
+                    except:
+                        next_run_display = "N/A"
+                else:
+                    next_run_display = "N/A"
+                
+                freq_display = self.get_frequency_display(frequency)
+                msg_preview = message[:75] + ("..." if len(message) > 75 else "")
+                field_value = f"**Channel:** {channel_name}\n**Frequency:** {freq_display}\n**Next:** {next_run_display}\n**Msg:** {msg_preview}"
+                embed.add_field(name=f"ID: {ann['id']}", value=field_value, inline=False)
+            
+            await interaction.followup.send(embed=embed)
+        except Exception as e:
+            logger.error(f"Error in list command: {e}")
+            try:
+                await interaction.followup.send(f"❌ Error: {str(e)[:100]}")
+            except:
+                pass
     
     @announce_group.command(name="stop", description="Stop an announcement")
     @app_commands.describe(announcement_id="ID of announcement to stop")
-    async def announce_stop(self, interaction: discord.Interaction, announcement_id: str):
+    async def announce_stop(self, interaction: discord.Interaction, announcement_id: int):
         """Stop a specific announcement."""
         await interaction.response.defer(ephemeral=True)
         
-        if announcement_id not in self.announcements:
-            await interaction.followup.send(f"❌ Announcement `{announcement_id}` not found")
-            return
-        
-        announcement = self.announcements[announcement_id]
-        message = announcement.get("message", "Unknown")
-        
-        del self.announcements[announcement_id]
-        self.save_announcements()
-        
-        embed = discord.Embed(
-            title="✅ Announcement Stopped",
-            description=f"**ID:** `{announcement_id}`\n**Message:** {message[:200]}...",
-            color=discord.Color.green()
-        )
-        
-        await interaction.followup.send(embed=embed)
+        try:
+            announcement = await db.get_announcement(announcement_id, interaction.guild.id)
+            
+            if not announcement:
+                await interaction.followup.send(f"❌ Announcement `{announcement_id}` not found in this server")
+                return
+            
+            # Stop the announcement
+            await db.stop_announcement(announcement_id, interaction.guild.id)
+            
+            message = announcement['message']
+            
+            embed = discord.Embed(
+                title="✅ Announcement Stopped",
+                description=f"**ID:** `{announcement_id}`\n**Message:** {message[:200]}...",
+                color=discord.Color.green()
+            )
+            
+            await interaction.followup.send(embed=embed)
+        except Exception as e:
+            logger.error(f"Error stopping announcement: {e}")
+            await interaction.followup.send(f"❌ Error: {str(e)[:100]}")
     
     @announce_group.command(name="preview", description="Preview an announcement")
     @app_commands.describe(announcement_id="ID of announcement to preview")
-    async def announce_preview(self, interaction: discord.Interaction, announcement_id: str):
+    async def announce_preview(self, interaction: discord.Interaction, announcement_id: int):
         """Preview an announcement message."""
         await interaction.response.defer(ephemeral=True)
         
-        if announcement_id not in self.announcements:
-            await interaction.followup.send(f"❌ Announcement `{announcement_id}` not found")
-            return
-        
-        announcement = self.announcements[announcement_id]
-        frequency = announcement.get("frequency", "unknown")
-        freq_display = self.get_frequency_display(frequency)
-        
-        embed = discord.Embed(
-            title="📋 Announcement Preview",
-            description=announcement.get("message"),
-            color=discord.Color.gold()
-        )
-        embed.set_footer(text=f"ID: {announcement_id} | Frequency: {freq_display}")
-        
-        await interaction.followup.send(embed=embed)
+        try:
+            announcement = await db.get_announcement(announcement_id, interaction.guild.id)
+            
+            if not announcement:
+                await interaction.followup.send(f"❌ Announcement `{announcement_id}` not found in this server")
+                return
+            
+            frequency = announcement['frequency']
+            freq_display = self.get_frequency_display(frequency)
+            
+            embed = discord.Embed(
+                title="📋 Announcement Preview",
+                description=announcement['message'],
+                color=discord.Color.gold()
+            )
+            embed.set_footer(text=f"ID: {announcement_id} | Frequency: {freq_display}")
+            
+            await interaction.followup.send(embed=embed)
+        except Exception as e:
+            logger.error(f"Error previewing announcement: {e}")
+            await interaction.followup.send(f"❌ Error: {str(e)[:100]}")
 
 
 async def setup(bot: commands.Bot):
