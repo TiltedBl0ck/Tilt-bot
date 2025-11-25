@@ -10,13 +10,21 @@ from cogs.utils.web_search import search_and_summarize, get_latest_info
 
 logger = logging.getLogger(__name__)
 
-PUTER_USERNAME = os.getenv("PUTER_USERNAME")
+# Load Puter credentials - one password, multiple usernames
 PUTER_PASSWORD = os.getenv("PUTER_PASSWORD")
+PUTER_USERNAMES_STR = os.getenv("PUTER_USERNAMES", "")  # Comma-separated list
 
-if not PUTER_USERNAME or not PUTER_PASSWORD:
-    raise ValueError("PUTER_USERNAME and PUTER_PASSWORD environment variables are required for Puter AI.")
+# Parse usernames from comma-separated string
+PUTER_ACCOUNTS = []
+if PUTER_PASSWORD and PUTER_USERNAMES_STR:
+    usernames = [u.strip() for u in PUTER_USERNAMES_STR.split(",") if u.strip()]
+    for i, username in enumerate(usernames, 1):
+        PUTER_ACCOUNTS.append({"username": username, "password": PUTER_PASSWORD, "index": i})
 
-logger.info("Successfully configured Puter AI integration.")
+if not PUTER_ACCOUNTS:
+    logger.warning("No Puter credentials found. Bot will use web search only.")
+else:
+    logger.info(f"Found {len(PUTER_ACCOUNTS)} Puter account(s): {', '.join([a['username'] for a in PUTER_ACCOUNTS])}")
 
 
 class Puter(commands.Cog):
@@ -30,17 +38,46 @@ class Puter(commands.Cog):
         self.serverinfo_cog = None
         self.last_login_time = 0
         self.login_cooldown = 3600  # 1 hour cooldown between logins
+        self.puter_available = True  # Track if Puter is working
+        self.current_account_index = 0  # Track which account we're using
+        self.failed_accounts = set()  # Track which accounts have failed
         
         # Available models on Puter API
         self.available_models = [
-            "gpt-4o",                    # Default - best quality
-            "gpt-4o-mini",               # Lightweight, fast
-            "claude-3-5-sonnet-20241022", # Alternative
-            "meta-llama/Llama-3.3-70B-Instruct-Turbo"  # Open source
+            "gpt-4o",
+            "gpt-4o-mini",
+            "claude-3-5-sonnet-20241022",
+            "meta-llama/Llama-3.3-70B-Instruct-Turbo"
         ]
 
+    def get_next_account(self):
+        """Get the next available Puter account."""
+        if not PUTER_ACCOUNTS:
+            return None
+        
+        # Find first account that hasn't failed
+        for i, account in enumerate(PUTER_ACCOUNTS):
+            if account["index"] not in self.failed_accounts:
+                self.current_account_index = i
+                logger.info(f"Using Puter account {account['index']}: {account['username']}")
+                return account
+        
+        # If all failed, reset and try first again
+        if len(self.failed_accounts) == len(PUTER_ACCOUNTS):
+            logger.warning("All Puter accounts have failed. Resetting...")
+            self.failed_accounts.clear()
+            self.current_account_index = 0
+            return PUTER_ACCOUNTS[0]
+        
+        return None
+
     async def ensure_authenticated(self):
-        """Ensure Puter client is authenticated (with caching)."""
+        """Ensure Puter client is authenticated (with fallback accounts)."""
+        if not PUTER_ACCOUNTS:
+            logger.warning("No Puter credentials available")
+            self.puter_available = False
+            return
+        
         current_time = time.time()
         
         # If client exists and recent login, reuse it
@@ -50,34 +87,48 @@ class Puter(commands.Cog):
         
         try:
             from putergenai import PuterClient
+            
+            account = self.get_next_account()
+            if not account:
+                logger.error("No available Puter accounts")
+                self.puter_available = False
+                return
+            
             self.client = PuterClient()
             
             # Run login in executor to avoid blocking
             await asyncio.get_event_loop().run_in_executor(
                 None,
-                lambda: self.client.login(PUTER_USERNAME, PUTER_PASSWORD)
+                lambda: self.client.login(account["username"], account["password"])
             )
             
             self.last_login_time = current_time
-            logger.info("Authenticated with Puter (new token cached)")
+            self.puter_available = True
+            logger.info(f"✅ Authenticated with Puter account {account['index']}: {account['username']}")
             
         except Exception as e:
-            logger.error(f"Puter authentication failed: {e}")
+            error_msg = str(e).lower()
+            account = PUTER_ACCOUNTS[self.current_account_index] if self.current_account_index < len(PUTER_ACCOUNTS) else None
+            
+            if "permission" in error_msg or "error 400" in error_msg:
+                logger.error(f"❌ Account {account['index']}: {account['username']} Permission denied - marking as failed")
+                if account:
+                    self.failed_accounts.add(account["index"])
+            
+            logger.error(f"Puter auth failed: {e}")
             self.client = None
-            self.last_login_time = 0
-            raise
+            self.puter_available = False
 
     def build_system_message(self, guild: discord.Guild = None) -> str:
-        """Build complete system message from memory and server context."""
+        """Build system message from memory and server context."""
         memory_cog = self.bot.get_cog("Memory")
         serverinfo_cog = self.bot.get_cog("ServerInfo")
         
         if not memory_cog:
-            return "You are a helpful Discord bot assistant. You have access to real-time web search results. Always use the web search information provided to give current, accurate answers."
+            return "You are a helpful Discord bot. Provide accurate, helpful responses based on available information."
         
         memory = memory_cog.memory
         
-        # Start with memory-based prompt
         if memory.get('system_prompt'):
             system_msg = memory.get('system_prompt')
         else:
@@ -85,59 +136,38 @@ class Puter(commands.Cog):
                 f"You are {memory.get('bot_name', 'a Discord bot')}.",
                 f"Description: {memory.get('bot_description', 'A helpful bot')}",
                 f"Personality: {memory.get('personality', 'helpful and friendly')}",
-                f"Creator: {memory.get('owner', 'Unknown')}",
             ]
-            
-            facts = memory.get('custom_facts', [])
-            if facts:
-                lines.append("\nAbout yourself:")
-                for fact in facts:
-                    lines.append(f"- {fact}")
-            
             system_msg = "\n".join(lines)
         
-        # Add server context if available
         if guild and serverinfo_cog:
             try:
                 guild_info = serverinfo_cog.get_guild_context(guild)
-                system_msg += f"\n\nServer Context:\n{guild_info}"
-                system_msg += "\n\nYou can reference channels, roles, and members of this server in your responses."
+                system_msg += f"\n\nServer: {guild_info}"
             except Exception as e:
                 logger.debug(f"Could not get guild context: {e}")
-        
-        system_msg += "\n\nIMPORTANT: You have access to real-time web search results. Use them to provide current, accurate information. When web search results are provided below, use them as your primary source for answering questions about current events, news, products, or recent information."
         
         return system_msg
 
     def get_conversation_context(self, channel_id: int, user_message: str, web_context: str = "", guild: discord.Guild = None) -> list:
-        """Build conversation context with history, memory, server data, and web search results."""
+        """Build conversation context."""
         history = self.conversation_history[channel_id]
-        
-        # ALWAYS include system message first (with guild context)
         system_msg = self.build_system_message(guild)
         
-        # Add web search context if available - THIS IS CRITICAL
         if web_context and web_context.strip():
-            system_msg += f"\n\n**REAL-TIME WEB SEARCH RESULTS:**\n{web_context}"
-            system_msg += "\n\nBased on these current web search results, provide an accurate, up-to-date answer."
+            system_msg += f"\n\n**Current Information:**\n{web_context}"
         
         messages = [{"role": "system", "content": system_msg}]
         
-        # Add conversation history (without system message)
         for msg in history:
             if msg.get("role") != "system":
                 messages.append(msg)
         
-        # Add current user message
         messages.append({"role": "user", "content": user_message})
-        
         return messages
 
     def update_history(self, channel_id: int, user_message: str, ai_response: str):
         """Update conversation history."""
         history = self.conversation_history[channel_id]
-        
-        # Don't store system messages in history, only user/assistant
         history.append({"role": "user", "content": user_message})
         history.append({"role": "assistant", "content": ai_response})
         
@@ -145,12 +175,12 @@ class Puter(commands.Cog):
             self.conversation_history[channel_id] = history[-self.max_history:]
 
     async def get_puter_response(self, messages: list, model: str = "gpt-4o", attempt: int = 0) -> str:
-        """Get response from Puter AI with fallback support."""
+        """Get response from Puter AI with account fallback."""
         try:
             await self.ensure_authenticated()
             
-            if self.client is None:
-                return "❌ Failed to authenticate with Puter. Please check your credentials."
+            if not self.puter_available or self.client is None:
+                return None
 
             loop = asyncio.get_event_loop()
             response = await asyncio.wait_for(
@@ -162,7 +192,7 @@ class Puter(commands.Cog):
                         strict_model=False
                     )
                 ),
-                timeout=30.0  # 30 second timeout
+                timeout=30.0
             )
 
             if isinstance(response, dict):
@@ -174,66 +204,51 @@ class Puter(commands.Cog):
             else:
                 content = str(response)
 
-            return content or "No response generated"
+            return content or None
 
         except Exception as e:
             error_msg = str(e).lower()
+            logger.error(f"Puter error: {e}")
             
-            # Content moderation error - try next model
-            if "content moderation failed" in error_msg or "moderation" in error_msg:
-                logger.warning(f"Content moderation failed on model {model}, attempting fallback")
+            # Permission denied - try next account
+            if "permission" in error_msg or "error 400" in error_msg:
+                logger.warning(f"Permission denied - trying fallback account...")
+                account = PUTER_ACCOUNTS[self.current_account_index] if self.current_account_index < len(PUTER_ACCOUNTS) else None
+                if account:
+                    self.failed_accounts.add(account["index"])
                 
-                if attempt < len(self.available_models):
-                    fallback_model = self.available_models[attempt]
-                    logger.info(f"Retrying with fallback model: {fallback_model}")
-                    return await self.get_puter_response(messages, fallback_model, attempt + 1)
-                else:
-                    return "⚠️ Your message was flagged by content moderation. Please try rephrasing it and avoiding sensitive language."
-            
-            # Model not available - try next one
-            if "invalid" in error_msg or "not found" in error_msg or "not available" in error_msg:
-                logger.warning(f"Model {model} invalid, attempting fallback")
+                # Reset client and try next account
+                self.client = None
+                self.puter_available = False
                 
-                if attempt < len(self.available_models):
-                    fallback_model = self.available_models[attempt]
-                    logger.info(f"Trying fallback model: {fallback_model}")
-                    return await self.get_puter_response(messages, fallback_model, attempt + 1)
-                else:
-                    return "❌ All available models failed. Please check Puter API."
+                # Try next account
+                if len(self.failed_accounts) < len(PUTER_ACCOUNTS):
+                    await self.ensure_authenticated()
+                    if self.puter_available and self.client:
+                        return await self.get_puter_response(messages, model, attempt)
+                
+                return None
             
-            # Timeout error
-            if "timeout" in error_msg:
-                logger.error("Puter API timeout")
-                return "❌ Puter API took too long to respond. Please try again."
+            # Model error - try fallback model
+            if "moderation" in error_msg and attempt < len(self.available_models):
+                fallback_model = self.available_models[attempt]
+                return await self.get_puter_response(messages, fallback_model, attempt + 1)
             
-            # Other errors
-            logger.error(f"Puter API error: {e}")
-            return f"❌ Puter API error: {str(e)[:100]}"
+            return None
 
-    @app_commands.command(name="chat", description="Chat with Puter AI (with live web search)")
-    @app_commands.describe(prompt="Your question", model="AI model (gpt-4o, gpt-4o-mini, claude, llama)", search="Use web search (yes/no)")
-    async def chat(self, interaction: discord.Interaction, prompt: str, model: str = "gpt-4o", search: str = "yes"):
-        """Chat command with context, server awareness, and web search."""
+    @app_commands.command(name="chat", description="Chat with AI (with web search)")
+    @app_commands.describe(prompt="Your question")
+    async def chat(self, interaction: discord.Interaction, prompt: str):
+        """Chat command with web search."""
         await interaction.response.defer(thinking=True)
 
         try:
-            # Validate model
-            if model not in self.available_models and not any(m in model for m in ["gpt", "claude", "llama"]):
-                model = "gpt-4o"  # Default
-            
-            # ALWAYS perform web search for current questions
             web_context = ""
-            if search.lower() in ["yes", "y", "true", "1"]:
-                try:
-                    logger.info(f"🔍 Performing web search for: {prompt}")
-                    web_context = await get_latest_info(prompt)
-                    if web_context:
-                        logger.info(f"✅ Web search returned results")
-                    else:
-                        logger.warning(f"⚠️ Web search returned no results")
-                except Exception as e:
-                    logger.error(f"Web search failed: {e}")
-                    web_context = ""
+            try:
+                logger.info(f"Searching for: {prompt}")
+                web_context = await get_latest_info(prompt)
+            except Exception as e:
+                logger.warning(f"Web search failed: {e}")
             
             messages = self.get_conversation_context(
                 interaction.channel_id, 
@@ -241,37 +256,44 @@ class Puter(commands.Cog):
                 web_context=web_context,
                 guild=interaction.guild
             )
-            response_text = await self.get_puter_response(messages, model)
+            
+            response_text = await self.get_puter_response(messages)
+            
+            if response_text is None:
+                if web_context:
+                    response_text = f"📚 Here's what I found:\n\n{web_context}"
+                else:
+                    response_text = "Sorry, I'm having trouble processing that right now. Please try again."
+            
             self.update_history(interaction.channel_id, prompt, response_text)
 
             if len(response_text) > 1900:
-                response_text = response_text[:1900] + "... *(truncated)*"
+                response_text = response_text[:1900] + "..."
 
-            await interaction.followup.send(f"> **You:** {prompt}\n\n**AI:** {response_text}")
-            logger.info(f"Chat command used by {interaction.user} in {interaction.guild}")
+            await interaction.followup.send(f"**You:** {prompt}\n\n{response_text}")
+            
         except Exception as e:
-            logger.error(f"Chat command error: {e}")
-            await interaction.followup.send(f"❌ Error: {str(e)}")
+            logger.error(f"Chat error: {e}")
+            await interaction.followup.send(f"Error: {str(e)[:100]}")
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """Handle mentions with context, server awareness, and web search."""
+        """Handle mentions."""
         if message.author.bot or not self.bot.user.mentioned_in(message):
             return
 
         async with message.channel.typing():
             prompt = message.content.replace(f'<@!{self.bot.user.id}>', '').replace(f'<@{self.bot.user.id}>', '').strip()
             if not prompt:
-                await message.channel.send("Hello! How can I help?", reference=message)
+                await message.channel.send("Hi! How can I help?", reference=message)
                 return
 
             try:
-                # ALWAYS search web for mentions
-                logger.info(f"🔍 Mention triggered - performing web search for: {prompt}")
-                web_context = await get_latest_info(prompt)
-                
-                if not web_context:
-                    logger.warning(f"Web search returned no results for mention")
+                web_context = ""
+                try:
+                    web_context = await get_latest_info(prompt)
+                except Exception as e:
+                    logger.warning(f"Web search failed: {e}")
                 
                 messages = self.get_conversation_context(
                     message.channel.id, 
@@ -279,29 +301,54 @@ class Puter(commands.Cog):
                     web_context=web_context,
                     guild=message.guild
                 )
-                response_text = await self.get_puter_response(messages, "gpt-4o")
+                
+                response_text = await self.get_puter_response(messages)
+                
+                if response_text is None:
+                    if web_context:
+                        response_text = f"📚 Here's what I found:\n\n{web_context}"
+                    else:
+                        response_text = "Sorry, I'm unable to process that right now."
+                
                 self.update_history(message.channel.id, prompt, response_text)
 
                 if len(response_text) > 1900:
-                    response_text = response_text[:1900] + "... *(truncated)*"
+                    response_text = response_text[:1900] + "..."
 
                 await message.channel.send(response_text, reference=message)
-                logger.info(f"AI mention response sent to {message.author} in {message.guild}")
+                
             except Exception as e:
-                logger.error(f"Mention response error: {e}")
-                await message.channel.send(f"❌ Error: {str(e)}", reference=message)
+                logger.error(f"Mention error: {e}")
+                await message.channel.send(f"Error: {str(e)[:100]}", reference=message)
 
-    @app_commands.command(name="clear-chat", description="Clear conversation history in this channel")
+    @app_commands.command(name="clear-chat", description="Clear conversation history")
     async def clear_chat(self, interaction: discord.Interaction):
-        """Clear channel conversation history."""
+        """Clear chat history."""
         channel_id = interaction.channel_id
         if channel_id in self.conversation_history:
             del self.conversation_history[channel_id]
-            await interaction.response.send_message("✅ Conversation history cleared.", ephemeral=True)
+            await interaction.response.send_message("✅ History cleared.", ephemeral=True)
         else:
             await interaction.response.send_message("No history to clear.", ephemeral=True)
 
+    @app_commands.command(name="account-status", description="Check Puter account status")
+    async def account_status(self, interaction: discord.Interaction):
+        """Check which accounts are available."""
+        await interaction.response.defer(ephemeral=True)
+        
+        if not PUTER_ACCOUNTS:
+            await interaction.followup.send("❌ No Puter accounts configured")
+            return
+        
+        status_msg = "📊 **Puter Account Status:**\n\n"
+        for account in PUTER_ACCOUNTS:
+            status = "❌ Failed" if account["index"] in self.failed_accounts else "✅ Available"
+            status_msg += f"Account {account['index']}: {account['username']} - {status}\n"
+        
+        status_msg += f"\n**Currently using:** Account {PUTER_ACCOUNTS[self.current_account_index]['index']}: {PUTER_ACCOUNTS[self.current_account_index]['username']}"
+        await interaction.followup.send(status_msg)
+
 
 async def setup(bot: commands.Bot):
-    """The setup function to add this cog to the bot."""
+    """Setup cog."""
     await bot.add_cog(Puter(bot))

@@ -8,29 +8,64 @@ logger = logging.getLogger(__name__)
 
 
 async def web_search(query: str, max_results: int = 5) -> str:
-    """Search the web using DuckDuckGo and return detailed results."""
+    """Search the web using DDGS (new package) and return detailed results."""
     try:
-        from duckduckgo_search import DDGS
+        from ddgs import DDGS  # NEW: Use ddgs instead of duckduckgo_search
         
         logger.info(f"🔍 Starting web search for: {query}")
-        ddgs = DDGS()
         
-        # Perform search with timeout
+        # For very short queries, just search directly
+        if len(query) <= 3:
+            search_query = query
+        else:
+            # For longer queries, use filters
+            search_query = f'"{query}" -site:zhihu.com -site:mayo -site:medical'
+        
         results = []
         try:
-            results = list(ddgs.text(query, max_results=max_results))
+            with DDGS() as ddgs:
+                results = list(ddgs.text(search_query, max_results=max_results + 2))
         except Exception as search_err:
-            logger.error(f"DuckDuckGo search error: {search_err}")
-            return None
+            logger.error(f"DDGS search error: {search_err}")
+            # Fallback to basic search
+            try:
+                with DDGS() as ddgs:
+                    results = list(ddgs.text(query, max_results=max_results))
+            except:
+                return None
         
         if not results or len(results) == 0:
             logger.warning(f"No search results for: {query}")
             return None
         
-        # Format detailed results
-        summary = f"🔍 **Recent Web Information about '{query}':**\n\n"
+        # Filter relevant results
+        filtered_results = []
+        query_words = set(query.lower().split())
         
-        for i, result in enumerate(results[:max_results], 1):
+        for result in results:
+            title = result.get('title', '').lower()
+            body = result.get('body', '').lower()
+            
+            # For short queries, be lenient
+            if len(query_words) <= 2:
+                filtered_results.append(result)
+            else:
+                # Check relevance - at least 1 word from query should match
+                matching_words = sum(1 for word in query_words if word in title or word in body)
+                if matching_words >= 1:
+                    filtered_results.append(result)
+            
+            if len(filtered_results) >= max_results:
+                break
+        
+        if not filtered_results:
+            logger.warning(f"No relevant results after filtering for: {query}")
+            return None
+        
+        # Format detailed results
+        summary = f"📚 **Search Results for '{query}':**\n\n"
+        
+        for i, result in enumerate(filtered_results[:max_results], 1):
             try:
                 title = result.get('title', 'No title')
                 body = result.get('body', 'No description')
@@ -41,17 +76,17 @@ async def web_search(query: str, max_results: int = 5) -> str:
                 body = re.sub(r'\s+', ' ', body).strip()
                 
                 summary += f"**{i}. {title}**\n"
-                summary += f"📝 {body}\n"
-                summary += f"🔗 Source: {link}\n\n"
+                summary += f"{body}\n"
+                summary += f"Source: {link}\n\n"
             except Exception as e:
                 logger.error(f"Error processing result {i}: {e}")
                 continue
         
-        logger.info(f"✅ Web search successful - found {len(results)} results")
-        return summary if summary != f"🔍 **Recent Web Information about '{query}':**\n\n" else None
+        logger.info(f"✅ Web search successful - found {len(filtered_results)} relevant results")
+        return summary if summary != f"📚 **Search Results for '{query}':**\n\n" else None
         
     except ImportError:
-        logger.error("❌ duckduckgo-search not installed")
+        logger.error("❌ ddgs package not installed. Run: pip install ddgs")
         return None
     except Exception as e:
         logger.error(f"❌ Web search error: {e}")
@@ -94,10 +129,10 @@ async def search_and_summarize(query: str) -> str:
     logger.info(f"📡 Initiating web search for: '{query}'")
     
     try:
-        result = await asyncio.wait_for(web_search(query), timeout=10.0)
+        result = await asyncio.wait_for(web_search(query), timeout=15.0)
         
         if result:
-            logger.info(f"✅ Web search returned {len(result)} characters of data")
+            logger.info(f"✅ Web search returned results")
             return result
         else:
             logger.warning(f"⚠️ Web search returned no results for: {query}")
