@@ -36,7 +36,7 @@ class HelpCommand(commands.Cog):
 
         cogs_with_commands = {}
         # Exclude specific cogs from the help menu
-        excluded_cogs = ["CommandHandler", "MemberEvents", "ErrorHandler", "HelpCommand", "Gemini", "SetupCommands", "ConfigCommands"]
+        excluded_cogs = ["CommandHandler", "MemberEvents", "ErrorHandler", "HelpCommand", "Gemini", "Puter", "SetupCommands", "ConfigCommands"]
 
         # Add Setup and Config Groups Manually
         setup_cog = self.bot.get_cog("SetupCommands")
@@ -53,7 +53,7 @@ class HelpCommand(commands.Cog):
                     cogs_with_commands["🔧 Config"] = cmd.commands
                     break
 
-        # Add Gemini cog manually
+        # Add Gemini cog manually (Renaming to AI Chat for user friendliness)
         gemini_cog = self.bot.get_cog("Gemini")
         if gemini_cog:
             cogs_with_commands["🧠 AI Chat"] = gemini_cog.get_app_commands()
@@ -130,4 +130,3 @@ class HelpCommand(commands.Cog):
 async def setup(bot: commands.Bot):
     """The setup function to add this cog to the bot."""
     await bot.add_cog(HelpCommand(bot))
-

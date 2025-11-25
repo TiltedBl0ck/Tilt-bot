@@ -22,19 +22,23 @@ class CommandHandler(commands.Cog):
 
         # Define directories and root files to load from
         cog_dirs = ["commands", "events"]
-        root_cogs = ["error_handler", "serverinfo", "memory", "puter"]  # Added "serverinfo" before others
+        # REPLACED 'puter' with 'gemini'
+        root_cogs = ["error_handler", "serverinfo", "memory", "gemini"] 
 
         # Load cogs from subdirectories
         for cog_dir in cog_dirs:
             path = f"cogs/{cog_dir}"
-            for filename in os.listdir(path):
-                if filename.endswith(".py") and not filename.startswith("__"):
-                    extension_name = f"cogs.{cog_dir}.{filename[:-3]}"
-                    try:
-                        await self.bot.load_extension(extension_name)
-                        logger.info(f"Successfully loaded extension: {extension_name}")
-                    except Exception as e:
-                        logger.error(f"Failed to load extension {extension_name}: {e}", exc_info=True)
+            if os.path.exists(path):
+                for filename in os.listdir(path):
+                    if filename.endswith(".py") and not filename.startswith("__"):
+                        extension_name = f"cogs.{cog_dir}.{filename[:-3]}"
+                        try:
+                            await self.bot.load_extension(extension_name)
+                            logger.info(f"Successfully loaded extension: {extension_name}")
+                        except Exception as e:
+                            logger.error(f"Failed to load extension {extension_name}: {e}", exc_info=True)
+            else:
+                 logger.warning(f"Directory not found: {path}")
 
         # Load cogs from the root cogs directory
         for cog_name in root_cogs:
