@@ -2,6 +2,50 @@ Tilt-bot Development
 
 This repository contains the source code for the Tilt-bot Discord bot.
 
+🚀 Release Notes
+
+v1.0.1 - The "Smart & Scheduled" Update
+
+We are excited to announce version 1.0.1, bringing major improvements to stability, intelligence, and server management.
+
+✨ New Features
+
+📢 Advanced Announcement System (/announce):
+
+Recurring Schedules: Set announcements to repeat every minute, hour, day, or month.
+
+Database Persistence: Announcements are stored in PostgreSQL and survive bot restarts.
+
+Management: Easily create, list, preview, and stop announcements via commands.
+
+🧠 Improved AI Chat (/chat):
+
+Web Search Capability: The bot can now fetch real-time information from the web.
+
+Smart Fallback: Automatically switches from Gemini to Perplexity AI if quotas are exceeded or for specific real-time queries.
+
+Enhanced Context: Better memory management for more natural conversations.
+
+⚡ Database Optimizations:
+
+Connection Pooling: Implemented asyncpg connection pooling for high-performance concurrent handling.
+
+Smart Caching: Guild configurations are cached in memory to reduce database load and improve response times.
+
+v1.0.0 - The Foundation
+
+The initial release establishing the core functionality of Tilt-bot.
+
+🛡️ Moderation Suite: Essential tools to keep your server safe (/kick, /ban, /timeout, /clear).
+
+👋 Welcome & Goodbye: Customizable messages and images to greet new members (/setup welcome, /setup goodbye).
+
+📊 Server Statistics: Live counters for Members, Bots, and Roles displayed in voice channel names (/setup serverstats).
+
+ℹ️ Utility Commands: Quick access to user avatars, server info, and bot latency (/avatar, /userinfo, /serverinfo, /ping).
+
+🤖 Basic AI Chat: Early integration with Google Gemini for conversational interactions.
+
 Setup Instructions
 
 1. Prerequisites
