@@ -30,13 +30,12 @@ class Gemini(commands.Cog):
         self.conversation_history = defaultdict(list)
         self.max_history = 15
         
-        # Prioritized list of Google's free models (newest first)
+        # CORRECTED: Use actual available model names (not -exp or -8b variants)
         self.model_list = [
-            "gemini-2.0-flash-exp",      # Newest, fastest, best for free tier
-            "gemini-1.5-flash",          # Stable, fast, high quota
-            "gemini-1.5-flash-8b",       # Lightweight, extremely fast
-            "gemini-1.5-pro",            # High intelligence, lower quota
-            "gemini-1.0-pro"             # Legacy fallback
+            "gemini-2.0-flash",      # Latest stable, fastest, best for free tier
+            "gemini-1.5-flash",      # Stable, fast, high quota
+            "gemini-1.5-pro",        # High intelligence, lower quota
+            "gemini-1.0-pro"         # Legacy fallback
         ]
         
         # Track which models are currently quota-limited
@@ -192,6 +191,13 @@ class Gemini(commands.Cog):
 
             except Exception as e:
                 error_str = str(e).lower()
+                
+                # Handle model not found errors
+                if "404" in str(e) or "not found" in error_str or "not supported" in error_str:
+                    self.model_status[model_name] = "unavailable"
+                    logger.warning(f"⚠️ Model not available: {model_name}: {e}")
+                    attempted_models.append(f"{model_name} (not_available)")
+                    continue
                 
                 # Handle generic 429 quota errors
                 if "429" in str(e) or "quota" in error_str or "rate" in error_str:
