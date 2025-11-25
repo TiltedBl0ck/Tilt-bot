@@ -4,6 +4,7 @@ import asyncio
 from bs4 import BeautifulSoup
 import re
 import os
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -12,41 +13,44 @@ PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY")
 
 
 async def web_search(query: str, max_results: int = 5) -> str:
-    """Search the web using DDGS (new package) and return detailed results."""
+    """Search the web using DDGS with fresh/no-cache results."""
     try:
         from ddgs import DDGS
         
-        logger.info(f"🔍 Starting web search for: {query}")
+        logger.info(f"🔍 Starting fresh web search for: {query}")
         
-        # Detect query type for better filtering
         query_lower = query.lower()
         
-        # Crypto detection - use direct price search
+        # Always add "today" or "now" for real-time queries
+        realtime_keywords = ['price', 'btc', 'ethereum', 'crypto', 'rate', 'cost', 'current']
+        if any(keyword in query_lower for keyword in realtime_keywords):
+            # Force fresh results with date/time
+            today = datetime.now().strftime("%B %d, %Y")
+            search_query = f'"{query}" today {today} -cache -old'
+        else:
+            search_query = query
+        
+        # Crypto detection - use direct price search with today
         crypto_symbols = {
-            'btc': 'bitcoin price',
-            'eth': 'ethereum price',
-            'crypto': 'cryptocurrency prices',
-            'bitcoin': 'bitcoin price usd',
-            'ethereum': 'ethereum price usd'
+            'btc': 'bitcoin price today USD',
+            'eth': 'ethereum price today USD',
+            'doge': 'dogecoin price today USD',
+            'crypto': 'cryptocurrency prices today',
+            'bitcoin': 'bitcoin price today USD',
+            'ethereum': 'ethereum price today USD'
         }
         
-        search_query = query
         for symbol, replacement in crypto_symbols.items():
             if symbol in query_lower:
                 search_query = replacement
                 break
         
-        # For very short queries, just search directly
-        if len(query) <= 3:
-            search_query = query
-        else:
-            # For longer queries, use filters
-            search_query = f'"{search_query}" -site:zhihu.com -site:mayo -site:medical -site:forum'
+        logger.info(f"🔍 Search query: {search_query}")
         
         results = []
         try:
             with DDGS() as ddgs:
-                results = list(ddgs.text(search_query, max_results=max_results + 2))
+                results = list(ddgs.text(search_query, max_results=max_results + 3))
         except Exception as search_err:
             logger.error(f"DDGS search error: {search_err}")
             # Fallback to basic search
@@ -57,10 +61,10 @@ async def web_search(query: str, max_results: int = 5) -> str:
                 return None
         
         if not results or len(results) == 0:
-            logger.warning(f"No search results for: {query}")
+            logger.warning(f"⚠️ No search results for: {query}")
             return None
         
-        # Filter relevant results
+        # Filter relevant results - prioritize recent/official sources
         filtered_results = []
         query_words = set(query.lower().split())
         
@@ -69,14 +73,24 @@ async def web_search(query: str, max_results: int = 5) -> str:
             body = result.get('body', '').lower()
             link = result.get('href', 'No link')
             
+            # Prioritize official sources
+            official_sites = ['coinmarketcap', 'coingecko', 'yahoo finance', 'google finance', 'bloomberg']
+            is_official = any(site in link.lower() for site in official_sites)
+            
             # Skip irrelevant sites
-            if any(blocked in link for blocked in ['reddit.com', 'forum', 'discuss']):
+            blocked_sites = ['reddit.com', 'forum', 'discuss', 'twitter.com', 'facebook.com']
+            if any(blocked in link for blocked in blocked_sites):
                 continue
             
-            # For crypto queries, prioritize price/market data
-            if 'price' in query_lower or 'btc' in query_lower or 'crypto' in query_lower:
-                if any(keyword in title + body for keyword in ['price', 'usd', '$', 'market', 'trading', 'chart']):
-                    filtered_results.append(result)
+            # For crypto/price queries, strictly filter
+            if any(keyword in query_lower for keyword in ['price', 'btc', 'crypto', 'ethereum']):
+                # Must contain price/market data
+                if any(keyword in title + body for keyword in ['price', 'usd', '$', 'market cap', 'trading', '24h']):
+                    # Prioritize official sources first
+                    if is_official:
+                        filtered_results.insert(0, result)  # Add to front
+                    else:
+                        filtered_results.append(result)
                 else:
                     continue
             else:
@@ -84,7 +98,6 @@ async def web_search(query: str, max_results: int = 5) -> str:
                 if len(query_words) <= 2:
                     filtered_results.append(result)
                 else:
-                    # Check relevance - at least 1 word from query should match
                     matching_words = sum(1 for word in query_words if word in title or word in body)
                     if matching_words >= 1:
                         filtered_results.append(result)
@@ -93,11 +106,11 @@ async def web_search(query: str, max_results: int = 5) -> str:
                 break
         
         if not filtered_results:
-            logger.warning(f"No relevant results after filtering for: {query}")
+            logger.warning(f"⚠️ No relevant results after filtering - {len(results)} total results found")
             return None
         
-        # Format detailed results
-        summary = f"📚 **Search Results for '{query}':**\n\n"
+        # Format detailed results with freshness indicator
+        summary = f"📡 **Fresh Search Results for '{query}':**\n\n"
         
         for i, result in enumerate(filtered_results[:max_results], 1):
             try:
@@ -106,23 +119,23 @@ async def web_search(query: str, max_results: int = 5) -> str:
                 link = result.get('href', 'No link')
                 
                 # Clean up body text
-                body = body[:200] if body else "No description available"
+                body = body[:250] if body else "No description available"
                 body = re.sub(r'\s+', ' ', body).strip()
                 
-                # Highlight crypto prices
-                if '$' in body or 'USD' in body or body.startswith('$'):
-                    summary += f"💰 **{i}. {title}**\n"
-                else:
-                    summary += f"**{i}. {title}**\n"
+                # Mark official sources
+                is_official = any(site in link.lower() for site in ['coinmarketcap', 'coingecko', 'yahoo', 'google', 'bloomberg'])
+                emoji = "💰" if '$' in body or 'USD' in body else "📊"
+                official_tag = " ✅ Official" if is_official else ""
                 
+                summary += f"{emoji} **{i}. {title}**{official_tag}\n"
                 summary += f"{body}\n"
-                summary += f"Source: {link}\n\n"
+                summary += f"🔗 {link}\n\n"
             except Exception as e:
                 logger.error(f"Error processing result {i}: {e}")
                 continue
         
-        logger.info(f"✅ Web search successful - found {len(filtered_results)} relevant results")
-        return summary if summary != f"📚 **Search Results for '{query}':**\n\n" else None
+        logger.info(f"✅ Fresh web search successful - found {len(filtered_results)} relevant results")
+        return summary if summary != f"📡 **Fresh Search Results for '{query}':**\n\n" else None
         
     except ImportError:
         logger.error("❌ ddgs package not installed. Run: pip install ddgs")
@@ -133,13 +146,16 @@ async def web_search(query: str, max_results: int = 5) -> str:
 
 
 async def perplexity_search(query: str) -> str:
-    """Fallback to Perplexity API when DDGS fails."""
+    """Fallback to Perplexity API for real-time data when DDGS insufficient."""
     if not PERPLEXITY_API_KEY:
         logger.warning("⚠️ PERPLEXITY_API_KEY not configured - skipping Perplexity fallback")
         return None
     
     try:
-        logger.info(f"🔄 Falling back to Perplexity API for: {query}")
+        logger.info(f"🔄 Using Perplexity API (real-time) for: {query}")
+        
+        # Add context for real-time data
+        enhanced_query = f"{query} - provide current/today's data only"
         
         async with aiohttp.ClientSession() as session:
             headers = {
@@ -152,7 +168,7 @@ async def perplexity_search(query: str) -> str:
                 "messages": [
                     {
                         "role": "user",
-                        "content": query
+                        "content": enhanced_query
                     }
                 ]
             }
@@ -168,8 +184,8 @@ async def perplexity_search(query: str) -> str:
                     content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
                     
                     if content:
-                        logger.info(f"✅ Perplexity API returned results")
-                        return f"🔍 **Perplexity Search Results:**\n\n{content}"
+                        logger.info(f"✅ Perplexity API returned real-time results")
+                        return f"🌐 **Real-Time Data (Perplexity AI):**\n\n{content}"
                     else:
                         logger.warning("Perplexity API returned empty content")
                         return None
@@ -217,19 +233,19 @@ async def fetch_url_content(url: str, timeout: int = 10) -> str:
 
 
 async def search_and_summarize(query: str) -> str:
-    """Search the web and return context for AI. Returns None if no results."""
-    logger.info(f"📡 Initiating web search for: '{query}'")
+    """Search the web with real-time focus. Returns None if no results."""
+    logger.info(f"📡 Initiating real-time search for: '{query}'")
     
     try:
-        # Try DDGS first
+        # Try DDGS first (fast, fresh)
         result = await asyncio.wait_for(web_search(query), timeout=15.0)
         
         if result:
-            logger.info(f"✅ Web search returned results")
+            logger.info(f"✅ DDGS returned fresh results")
             return result
         else:
-            logger.warning(f"⚠️ Web search returned no results - trying Perplexity API...")
-            # Fallback to Perplexity
+            logger.warning(f"⚠️ DDGS insufficient - requesting Perplexity real-time data...")
+            # Fallback to Perplexity for real-time data
             perplexity_result = await perplexity_search(query)
             if perplexity_result:
                 return perplexity_result
@@ -238,7 +254,7 @@ async def search_and_summarize(query: str) -> str:
                 return None
             
     except asyncio.TimeoutError:
-        logger.error("⏱️ Web search timeout - trying Perplexity API...")
+        logger.error("⏱️ DDGS timeout - requesting Perplexity real-time data...")
         perplexity_result = await perplexity_search(query)
         if perplexity_result:
             return perplexity_result
@@ -246,7 +262,7 @@ async def search_and_summarize(query: str) -> str:
             logger.error("Perplexity API also timed out")
             return None
     except Exception as e:
-        logger.error(f"❌ search_and_summarize error: {e} - trying Perplexity API...")
+        logger.error(f"❌ Search error: {e} - requesting Perplexity real-time data...")
         perplexity_result = await perplexity_search(query)
         if perplexity_result:
             return perplexity_result
@@ -256,7 +272,7 @@ async def search_and_summarize(query: str) -> str:
 
 
 async def get_latest_info(query: str) -> str:
-    """Get the latest information with web search. Returns formatted string or empty."""
+    """Get the latest/real-time information. Returns formatted string or empty."""
     try:
         result = await search_and_summarize(query)
         if result:
