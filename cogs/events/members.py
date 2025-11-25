@@ -25,9 +25,11 @@ class MemberEvents(commands.Cog):
         logger.info("Cancelled update_server_stats task.")
 
 
-    @tasks.loop(minutes=10)
+    # OPTIMIZATION: Increased interval from 10 minutes to 30 minutes
+    # This reduces database wakeups and API calls significantly.
+    @tasks.loop(minutes=30)
     async def update_server_stats(self):
-        """A background task that updates server statistics channels every 10 minutes."""
+        """A background task that updates server statistics channels every 30 minutes."""
         logger.debug("Running update_server_stats task.")
         if db_utils.pool is None:
             # This check ensures the task stops trying if the pool becomes unavailable later
@@ -82,7 +84,6 @@ class MemberEvents(commands.Cog):
                         update_tasks.append(
                             member_channel.edit(name=new_name, reason="Update Server Stats")
                         )
-                # Logging for missing/invalid channels handled after trying all updates
 
             # --- Update Bot Count ---
             if config.get("bot_count_channel_id"):
@@ -113,9 +114,8 @@ class MemberEvents(commands.Cog):
                 success_count = 0
                 for i, result in enumerate(results):
                     channel_type = "unknown"
-                    if i < len(update_tasks): # Get corresponding task target if possible
+                    if i < len(update_tasks): 
                         try:
-                           # This relies on internal structure, might break
                            channel_obj = update_tasks[i].__self__
                            if isinstance(channel_obj, discord.VoiceChannel):
                                channel_type = f"{channel_obj.name} ({channel_obj.id})"
@@ -125,7 +125,8 @@ class MemberEvents(commands.Cog):
                         if isinstance(result, discord.Forbidden):
                             logger.error(f"Missing permissions to edit stats channel ({channel_type}) in {guild.name}")
                         elif isinstance(result, discord.HTTPException):
-                             logger.error(f"HTTP error editing stats channel ({channel_type}) in {guild.name}: {result.status} {result.text}")
+                             # Rate limits are common here, logging as error might be too noisy if frequent, but good for debugging
+                             logger.warning(f"HTTP error editing stats channel ({channel_type}) in {guild.name}: {result.status} {result.text}")
                         else:
                             logger.error(f"Unexpected error editing stats channel ({channel_type}) in {guild.name}: {result}", exc_info=result)
                     else:
@@ -158,24 +159,22 @@ class MemberEvents(commands.Cog):
     async def on_stats_error(self, error):
         """Handles errors within the update_server_stats task loop."""
         logger.error(f"Unhandled error in update_server_stats loop: {error}", exc_info=True)
-        # Consider adding exponential backoff or stopping the task if errors persist
         await asyncio.sleep(60) # Wait before potentially restarting
 
 
-    @commands.Cog.listener("on_member_join") # Explicit listener type
+    @commands.Cog.listener("on_member_join")
     async def handle_member_join(self, member: discord.Member):
         """Sends a welcome message when a new member joins, using cached config."""
         guild = member.guild
         logger.info(f"Member joined: {member} ({member.id}) in guild {guild.name} ({guild.id})")
 
-        # Get config using the caching function
         config = await db_utils.get_guild_config(guild.id)
 
         if config and config.get("welcome_channel_id"):
             channel = guild.get_channel(config["welcome_channel_id"])
             if channel and isinstance(channel, discord.TextChannel):
                 message = config.get("welcome_message") or f"Welcome {member.mention} to the server!"
-                # Safe replacements (add more as needed)
+                # Safe replacements
                 message = message.replace("{user.mention}", member.mention)
                 message = message.replace("{user.name}", member.name)
                 message = message.replace("{user.discriminator}", member.discriminator or '0000')
@@ -201,45 +200,32 @@ class MemberEvents(commands.Cog):
                         logger.warning(f"Invalid welcome_image URL for guild {guild.id}: {img_url}")
 
                 try:
-                    # Check permissions before sending
                     if channel.permissions_for(guild.me).send_messages and channel.permissions_for(guild.me).embed_links:
                         await channel.send(embed=embed)
-                        logger.info(f"Sent welcome message for {member} in {guild.name}")
                     else:
                          logger.error(f"Missing send/embed permissions for welcome channel {channel.id} in guild {guild.id}")
 
-                except discord.Forbidden: # Should be caught by check above, but for safety
-                    logger.error(f"Forbidden error sending welcome message in channel {channel.id} for guild {guild.id}")
-                except discord.HTTPException as e:
-                     logger.error(f"HTTP error sending welcome message in {channel.id}: {e.status} {e.text}")
                 except Exception as e:
-                    logger.error(f"Failed to send welcome message: {e}", exc_info=True)
-            # Log missing/invalid channels only once if needed, maybe outside the listener
-            # elif channel: logger.warning(...) else: logger.warning(...)
-
-        # No need for explicit else or DB error handling here, get_guild_config handles logging
+                    logger.error(f"Failed to send welcome message: {e}")
 
 
-    @commands.Cog.listener("on_member_remove") # Explicit listener type
+    @commands.Cog.listener("on_member_remove")
     async def handle_member_remove(self, member: discord.Member):
         """Sends a goodbye message when a member leaves, using cached config."""
         guild = member.guild
         logger.info(f"Member left: {member} ({member.id}) from guild {guild.name} ({guild.id})")
 
-        # Get config using the caching function
         config = await db_utils.get_guild_config(guild.id)
 
         if config and config.get("goodbye_channel_id"):
             channel = guild.get_channel(config["goodbye_channel_id"])
             if channel and isinstance(channel, discord.TextChannel):
                 message = config.get("goodbye_message") or f"{member.display_name} has left the server."
-                 # Safe replacements
-                message = message.replace("{user.mention}", f"@{member.name}") # Use @name as mention won't work
+                message = message.replace("{user.mention}", f"@{member.name}") 
                 message = message.replace("{user.name}", member.name)
                 message = message.replace("{user.discriminator}", member.discriminator or '0000')
                 message = message.replace("{user.id}", str(member.id))
                 message = message.replace("{server.name}", guild.name)
-                # Member count reflects count *after* removal (Discord event timing)
                 message = message.replace("{member.count}", str(guild.member_count))
 
                 embed = discord.Embed(
@@ -260,25 +246,15 @@ class MemberEvents(commands.Cog):
                         logger.warning(f"Invalid goodbye_image URL for guild {guild.id}: {img_url}")
 
                 try:
-                     # Check permissions before sending
                     if channel.permissions_for(guild.me).send_messages and channel.permissions_for(guild.me).embed_links:
                         await channel.send(embed=embed)
-                        logger.info(f"Sent goodbye message for {member} in {guild.name}")
                     else:
                          logger.error(f"Missing send/embed permissions for goodbye channel {channel.id} in guild {guild.id}")
 
-                except discord.Forbidden:
-                    logger.error(f"Forbidden error sending goodbye message in channel {channel.id} for guild {guild.id}")
-                except discord.HTTPException as e:
-                     logger.error(f"HTTP error sending goodbye message in {channel.id}: {e.status} {e.text}")
                 except Exception as e:
-                    logger.error(f"Failed to send goodbye message: {e}", exc_info=True)
-            # Log missing/invalid channels only once if needed
-
-        # No need for explicit else or DB error handling here
+                    logger.error(f"Failed to send goodbye message: {e}")
 
 
 async def setup(bot: commands.Bot):
     """The setup function to add this cog to the bot."""
     await bot.add_cog(MemberEvents(bot))
-

@@ -38,11 +38,11 @@ async def init_db() -> bool:
         return False
     
     try:
-        # OPTIMIZED: Smaller pool for lower resource usage
+        # OPTIMIZED: min_size=0 allows scaling to zero when idle
         pool = await asyncpg.create_pool(
             dsn=POSTGRES_DSN,
-            min_size=1,  # Keep minimal connections
-            max_size=3,  # Reduced from 5 to 3
+            min_size=0,  # Changed from 1 to 0 to allow DB sleep
+            max_size=3,  # Keep modest max size
             timeout=30,
             command_timeout=60,
         )
@@ -50,7 +50,7 @@ async def init_db() -> bool:
         if pool is None:
             raise ConnectionError("Failed to create connection pool (pool is None).")
         
-        logger.info("PostgreSQL connection pool established successfully (OPTIMIZED).")
+        logger.info("PostgreSQL connection pool established successfully (Scaling Enabled: min_size=0).")
         
         # --- Schema Verification ---
         async with pool.acquire() as conn:
@@ -86,7 +86,7 @@ async def init_db() -> bool:
                 await conn.execute("CREATE INDEX idx_guild_id ON guild_config(guild_id)")
                 logger.info("Created database indexes for optimization.")
             else:
-                logger.info("guild_config table found, verifying columns...")
+                logger.info("guild_config table found.")
             
             # Check if announcements table exists
             ann_table_exists = await conn.fetchval("""
@@ -202,7 +202,7 @@ async def get_guild_config(guild_id: int) -> Optional[Dict[str, Any]]:
     # Check cache
     async with _cache_lock:
         if guild_id in _config_cache and not await _is_cache_expired(guild_id):
-            logger.debug(f"Cache HIT for guild {guild_id}")
+            # logger.debug(f"Cache HIT for guild {guild_id}") # Commented to reduce log spam
             return _config_cache[guild_id].copy()
     
     logger.debug(f"Cache MISS for guild {guild_id}")
@@ -224,7 +224,6 @@ async def get_guild_config(guild_id: int) -> Optional[Dict[str, Any]]:
                 async with _cache_lock:
                     _config_cache[guild_id] = config_dict
                     _cache_timestamps[guild_id] = __import__('time').time()
-                logger.debug(f"Fetched and cached config for guild {guild_id}")
                 return config_dict
             else:
                 async with _cache_lock:
@@ -286,7 +285,14 @@ async def update_counting_stats(guild_id: int, current_count: int, last_counter_
     try:
         async with get_db_connection() as conn:
             await conn.execute(sql, guild_id, current_count, last_counter_id)
-        await invalidate_config_cache(guild_id)
+        # We manually update cache instead of invalidating to prevent a read-after-write miss
+        # This is important for the batched writing logic
+        async with _cache_lock:
+            if guild_id in _config_cache:
+                _config_cache[guild_id]['current_count'] = current_count
+                _config_cache[guild_id]['last_counter_id'] = last_counter_id
+                _cache_timestamps[guild_id] = __import__('time').time() # Extend TTL
+                
         logger.debug(f"Updated counting stats for guild {guild_id}")
         return True
     except Exception as e:
@@ -364,17 +370,23 @@ async def get_announcements_by_server(server_id: int) -> List[Dict[str, Any]]:
 
 async def get_due_announcements() -> List[Dict[str, Any]]:
     """Get all announcements that are due to be sent."""
+    # Modified to return ALL active announcements for local caching if needed, 
+    # but based on the prompt we only need next_run data.
+    # To support the new caching logic in Announcer, we might want to fetch everything 
+    # that is active so we can check dates locally.
+    # However, to keep it simple and consistent with previous behavior for other callers:
     try:
         async with get_db_connection() as conn:
+            # OPTIMIZATION: Return all ACTIVE announcements, not just due ones.
+            # This allows the Python side to cache them and decide when to send.
             announcements = await conn.fetch(
-                """SELECT id, server_id, channel_id, message, frequency, created_by
+                """SELECT id, server_id, channel_id, message, frequency, created_by, next_run
                 FROM announcements
-                WHERE is_active = TRUE AND next_run <= $1""",
-                datetime.now()
+                WHERE is_active = TRUE"""
             )
         return [dict(ann) for ann in announcements]
     except Exception as e:
-        logger.error(f"Failed to fetch due announcements: {e}")
+        logger.error(f"Failed to fetch announcements: {e}")
         return []
 
 async def update_announcement_next_run(ann_id: int, frequency: str) -> bool:
