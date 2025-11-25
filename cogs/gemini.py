@@ -6,6 +6,7 @@ import asyncio
 import os
 from collections import defaultdict
 from datetime import datetime
+import aiohttp
 import google.generativeai as genai
 from google.api_core import exceptions as google_exceptions
 from cogs.utils.web_search import get_latest_info
@@ -14,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 # Configure Gemini API
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY")
 
 if not GEMINI_API_KEY:
     logger.warning("GEMINI_API_KEY not found. Gemini AI features will not work.")
@@ -22,7 +24,7 @@ else:
 
 
 class Gemini(commands.Cog):
-    """AI chat with web search, conversation memory, and Google Gemini model fallback."""
+    """AI chat with Gemini fallback to Perplexity when quota exceeded."""
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.conversation_history = defaultdict(list)
@@ -92,8 +94,60 @@ class Gemini(commands.Cog):
             contents.append({"role": role, "parts": [msg["content"]]})
         return contents
 
+    async def get_perplexity_response(self, user_message: str) -> str:
+        """Fallback to Perplexity API when Gemini fails."""
+        if not PERPLEXITY_API_KEY:
+            logger.warning("⚠️ PERPLEXITY_API_KEY not configured - cannot use fallback")
+            return None
+        
+        try:
+            logger.info(f"🔄 Falling back to Perplexity API...")
+            
+            async with aiohttp.ClientSession() as session:
+                headers = {
+                    "Authorization": f"Bearer {PERPLEXITY_API_KEY}",
+                    "Content-Type": "application/json"
+                }
+                
+                payload = {
+                    "model": "sonar",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": user_message
+                        }
+                    ]
+                }
+                
+                async with session.post(
+                    "https://api.perplexity.ai/chat/completions",
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                        
+                        if content:
+                            logger.info(f"✅ Perplexity API returned response")
+                            return content
+                        else:
+                            logger.warning("Perplexity API returned empty content")
+                            return None
+                    else:
+                        logger.error(f"Perplexity API error: {response.status}")
+                        return None
+        
+        except asyncio.TimeoutError:
+            logger.error("Perplexity API timeout")
+            return None
+        except Exception as e:
+            logger.error(f"Perplexity API error: {e}")
+            return None
+
     async def get_gemini_response(self, channel_id: int, user_message: str, web_context: str = "", guild: discord.Guild = None) -> str:
-        """Get response from Gemini API with fallback for rate limits."""
+        """Get response from Gemini API with Perplexity fallback."""
         if not GEMINI_API_KEY:
             return "❌ Gemini API Key is missing."
 
@@ -105,7 +159,7 @@ class Gemini(commands.Cog):
         if web_context:
             final_prompt = f"**Information from web search:**\n{web_context}\n\n**User Query:** {user_message}"
 
-        # Try models in priority order
+        # Try Gemini models in priority order
         attempted_models = []
         for i, model_name in enumerate(self.model_list):
             try:
@@ -158,10 +212,18 @@ class Gemini(commands.Cog):
                 attempted_models.append(f"{model_name} (error)")
                 continue
 
-        # All models failed
-        status_report = "\n".join(attempted_models) if attempted_models else "All models failed"
-        logger.error(f"❌ All Gemini models exhausted: {status_report}")
-        return f"⚠️ **All AI models are currently unavailable.**\n\nAttempted:\n{status_report}\n\nPlease try again in a few moments."
+        # All Gemini models failed - try Perplexity fallback
+        logger.warning(f"❌ All Gemini models failed - attempting Perplexity fallback...")
+        perplexity_response = await self.get_perplexity_response(user_message)
+        
+        if perplexity_response:
+            logger.info("✅ Perplexity fallback successful")
+            return f"🌐 **(Via Perplexity AI)**\n\n{perplexity_response}"
+        else:
+            # Both failed
+            status_report = "\n".join(attempted_models) if attempted_models else "All models failed"
+            logger.error(f"❌ All AI services failed (Gemini + Perplexity)")
+            return f"⚠️ **All AI services are currently unavailable.**\n\nGemini attempted:\n{status_report}\n\nPerplexity: Not available or no API key configured\n\nPlease try again in a few moments."
 
     def update_history(self, channel_id: int, user_message: str, ai_response: str):
         """Update conversation history."""
@@ -223,7 +285,7 @@ class Gemini(commands.Cog):
             prompt = message.content.replace(f'<@!{self.bot.user.id}>', '').replace(f'<@{self.bot.user.id}>', '').strip()
             
             if not prompt:
-                await message.channel.send("Hi! I'm powered by Google Gemini. How can I help?", reference=message)
+                await message.channel.send("Hi! I'm powered by Google Gemini with Perplexity fallback. How can I help?", reference=message)
                 return
 
             try:
@@ -266,6 +328,7 @@ class Gemini(commands.Cog):
             emoji = "✅" if status == "available" else "⚠️" if "quota" in status else "❌"
             status_msg += f"{emoji} {i}. `{model}` - {status}\n"
         
+        status_msg += f"\n🌐 **Perplexity Fallback:** {'✅ Configured' if PERPLEXITY_API_KEY else '❌ Not configured'}"
         await interaction.followup.send(status_msg)
 
     @app_commands.command(name="clear-chat", description="Clear conversation history")
