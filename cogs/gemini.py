@@ -7,7 +7,12 @@ import os
 from collections import defaultdict
 import google.generativeai as genai
 from google.api_core import exceptions as google_exceptions
-from cogs.utils.web_search import get_latest_info
+
+# Try importing the web search, pass if missing so code still runs
+try:
+    from cogs.utils.web_search import get_latest_info
+except ImportError:
+    def get_latest_info(*args): return "" 
 
 logger = logging.getLogger(__name__)
 
@@ -27,20 +32,19 @@ class Gemini(commands.Cog):
         self.conversation_history = defaultdict(list)
         self.max_history = 15
         
-        # Prioritized list of Google's free models (newest first)
+        # UPDATED MODEL LIST (Latest as of 2025)
+        # Note: Gemini 3.0 and 2.5 are not released yet. 
+        # We prioritize 2.0 Flash (Newest), then 1.5 Pro (Smartest), then 1.5 Flash (Most Stable).
         self.model_list = [
-            "gemini-2.0-flash-exp",      # Newest, fastest, best for free tier
-            "gemini-1.5-flash",          # Stable, fast, high quota
-            "gemini-1.5-flash-8b",       # Lightweight, extremely fast
-            "gemini-1.5-pro",            # High intelligence, lower quota
-            "gemini-1.0-pro"             # Legacy fallback
+            "gemini-2.0-flash",          # The actual "new" model (formerly exp)
+            "gemini-2.0-flash-exp",      # Experimental version of 2.0
+            "gemini-1.5-pro",            # High intelligence fallback
+            "gemini-1.5-flash",          # High speed/stability fallback
+            "gemini-1.5-flash-8b"        # Ultra-fast fallback
         ]
         
-        # Track which models are currently quota-limited
         self.model_status = {model: "available" for model in self.model_list}
-        self.current_preferred_model = 0
         
-        # Safety settings (permissive for Discord bot context)
         self.safety_settings = [
             {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -53,18 +57,16 @@ class Gemini(commands.Cog):
         memory_cog = self.bot.get_cog("Memory")
         serverinfo_cog = self.bot.get_cog("ServerInfo")
         
-        system_msg = "You are a helpful Discord bot. Provide accurate, helpful responses based on available information."
+        system_msg = "You are a helpful Discord bot. Provide accurate, helpful responses."
         
         if memory_cog:
             memory = memory_cog.memory
-            
             if memory.get('system_prompt'):
                 system_msg = memory.get('system_prompt')
             else:
                 lines = [
-                    f"You are {memory.get('bot_name', 'Tilt-bot')}.",
-                    f"Description: {memory.get('bot_description', 'A helpful bot')}",
-                    f"Personality: {memory.get('personality', 'helpful and friendly')}",
+                    f"You are {memory.get('bot_name', 'Bot')}.",
+                    f"Description: {memory.get('bot_description', 'A helpful AI')}",
                 ]
                 system_msg = "\n".join(lines)
         
@@ -72,21 +74,21 @@ class Gemini(commands.Cog):
             try:
                 guild_info = serverinfo_cog.get_guild_context(guild)
                 system_msg += f"\n\nContext about the current server:\n{guild_info}"
-            except Exception as e:
-                logger.debug(f"Could not get guild context: {e}")
+            except Exception:
+                pass
         
         return system_msg
 
     def format_history_for_gemini(self, history: list) -> list:
-        """Convert internal dictionary history to Gemini's content format."""
         contents = []
         for msg in history:
             role = "user" if msg["role"] == "user" else "model"
-            contents.append({"role": role, "parts": [msg["content"]]})
+            # Ensure content is never empty string, Gemini hates that
+            text_content = msg["content"] if msg["content"] else "." 
+            contents.append({"role": role, "parts": [text_content]})
         return contents
 
     async def get_gemini_response(self, channel_id: int, user_message: str, web_context: str = "", guild: discord.Guild = None) -> str:
-        """Get response from Gemini API with fallback for rate limits."""
         if not GEMINI_API_KEY:
             return "❌ Gemini API Key is missing."
 
@@ -98,99 +100,79 @@ class Gemini(commands.Cog):
         if web_context:
             final_prompt = f"**Information from web search:**\n{web_context}\n\n**User Query:** {user_message}"
 
-        # Try models in priority order
         attempted_models = []
-        for i, model_name in enumerate(self.model_list):
+        
+        for model_name in self.model_list:
             try:
-                logger.info(f"Trying Gemini model: {model_name}")
-                
-                # Initialize Model
+                # Setup Model
                 model = genai.GenerativeModel(
                     model_name=model_name,
                     system_instruction=system_instruction,
                     safety_settings=self.safety_settings
                 )
                 
-                # Start chat and generate
                 chat = model.start_chat(history=formatted_history)
+                
+                # Execute in thread to prevent blocking Discord
                 response = await asyncio.get_event_loop().run_in_executor(
                     None,
                     lambda: chat.send_message(final_prompt)
                 )
                 
-                # Success! Update status and return
                 self.model_status[model_name] = "available"
-                logger.info(f"✅ Success with {model_name}")
                 return response.text
-
-            except google_exceptions.ResourceExhausted:
-                self.model_status[model_name] = "quota_exceeded"
-                logger.warning(f"⚠️ Quota exceeded for {model_name}. Trying next model...")
-                attempted_models.append(f"{model_name} (quota)")
-                continue
 
             except Exception as e:
                 error_str = str(e).lower()
                 
-                # Handle generic 429 quota errors
-                if "429" in str(e) or "quota" in error_str or "rate" in error_str:
+                # Specific handling for Rate Limits
+                if "429" in error_str or "quota" in error_str or "exhausted" in error_str:
                     self.model_status[model_name] = "quota_exceeded"
-                    logger.warning(f"⚠️ Rate limited on {model_name}: {e}")
-                    attempted_models.append(f"{model_name} (rate_limit)")
-                    continue
+                    attempted_models.append(f"{model_name} (quota)")
                 
-                # Handle 503 service unavailable
-                if "503" in str(e) or "unavailable" in error_str:
-                    self.model_status[model_name] = "unavailable"
-                    logger.warning(f"⚠️ Service unavailable for {model_name}")
-                    attempted_models.append(f"{model_name} (unavailable)")
-                    continue
+                # Specific handling for "Model not found" (Old library or bad region)
+                elif "404" in error_str or "not found" in error_str:
+                    self.model_status[model_name] = "not_found"
+                    attempted_models.append(f"{model_name} (not found)")
                 
-                logger.error(f"❌ Error with {model_name}: {e}")
-                self.model_status[model_name] = "error"
-                attempted_models.append(f"{model_name} (error)")
+                else:
+                    logger.error(f"Error with {model_name}: {e}")
+                    self.model_status[model_name] = "error"
+                    attempted_models.append(f"{model_name} (error)")
+                
+                # Short backoff before trying next model
+                await asyncio.sleep(1)
                 continue
 
-        # All models failed
-        status_report = "\n".join(attempted_models) if attempted_models else "All models failed"
-        logger.error(f"❌ All Gemini models exhausted: {status_report}")
-        return f"⚠️ **All AI models are currently unavailable.**\n\nAttempted:\n{status_report}\n\nPlease try again in a few moments."
+        # If we reach here, all models failed
+        status_report = "\n".join(attempted_models)
+        return f"⚠️ **AI Unavailable.**\n\nDebug Info:\n{status_report}\n\n*Tip: Run `pip install -U google-generativeai` to fix 'not found' errors.*"
 
     def update_history(self, channel_id: int, user_message: str, ai_response: str):
-        """Update conversation history."""
         history = self.conversation_history[channel_id]
         history.append({"role": "user", "content": user_message})
         history.append({"role": "assistant", "content": ai_response})
-        
-        # Keep history within limits
         if len(history) > self.max_history * 2:
             self.conversation_history[channel_id] = history[-(self.max_history * 2):]
 
-    @app_commands.command(name="chat", description="Chat with Gemini AI (with web search)")
+    @app_commands.command(name="chat", description="Chat with Gemini AI")
     @app_commands.describe(prompt="Your question")
     async def chat(self, interaction: discord.Interaction, prompt: str):
-        """Chat command with web search."""
         await interaction.response.defer(thinking=True)
-
         try:
             web_context = ""
-            try:
-                if len(prompt) > 5:
-                    logger.info(f"Searching for: {prompt}")
-                    web_context = await get_latest_info(prompt)
-            except Exception as e:
-                logger.warning(f"Web search failed: {e}")
+            if len(prompt) > 5:
+                try:
+                    if hasattr(get_latest_info, '__call__'):
+                        web_context = await get_latest_info(prompt)
+                except Exception as e:
+                    logger.warning(f"Search error: {e}")
 
             response_text = await self.get_gemini_response(
-                interaction.channel_id,
-                prompt,
-                web_context=web_context,
-                guild=interaction.guild
+                interaction.channel_id, prompt, web_context, interaction.guild
             )
-
             self.update_history(interaction.channel_id, prompt, response_text)
 
-            # Split response into chunks if too long
             if len(response_text) > 1900:
                 chunks = [response_text[i:i+1900] for i in range(0, len(response_text), 1900)]
                 await interaction.followup.send(f"**You:** {prompt}\n\n{chunks[0]}")
@@ -200,15 +182,12 @@ class Gemini(commands.Cog):
                 await interaction.followup.send(f"**You:** {prompt}\n\n{response_text}")
 
         except Exception as e:
-            logger.error(f"Chat error: {e}")
-            await interaction.followup.send(f"Error: {str(e)[:100]}")
+            await interaction.followup.send(f"Critical Error: {e}")
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """Handle mentions."""
         if message.author.bot or not self.bot.user.mentioned_in(message):
             return
-
         if message.mention_everyone:
             return
 
@@ -216,62 +195,44 @@ class Gemini(commands.Cog):
             prompt = message.content.replace(f'<@!{self.bot.user.id}>', '').replace(f'<@{self.bot.user.id}>', '').strip()
             
             if not prompt:
-                await message.channel.send("Hi! I'm powered by Google Gemini. How can I help?", reference=message)
+                await message.channel.send("Hi! I'm Gemini 2.0. How can I help?", reference=message)
                 return
 
+            web_context = ""
             try:
-                web_context = ""
-                try:
-                    if len(prompt.split()) > 3:
-                        web_context = await get_latest_info(prompt)
-                except Exception as e:
-                    logger.warning(f"Web search failed: {e}")
+                if len(prompt.split()) > 3 and hasattr(get_latest_info, '__call__'):
+                    web_context = await get_latest_info(prompt)
+            except Exception:
+                pass
 
-                response_text = await self.get_gemini_response(
-                    message.channel.id,
-                    prompt,
-                    web_context=web_context,
-                    guild=message.guild
-                )
+            response_text = await self.get_gemini_response(
+                message.channel.id, prompt, web_context, message.guild
+            )
+            self.update_history(message.channel.id, prompt, response_text)
 
-                self.update_history(message.channel.id, prompt, response_text)
+            if len(response_text) > 2000:
+                chunks = [response_text[i:i+1900] for i in range(0, len(response_text), 1900)]
+                for chunk in chunks:
+                    await message.channel.send(chunk, reference=message)
+            else:
+                await message.channel.send(response_text, reference=message)
 
-                # Split response into chunks if too long
-                if len(response_text) > 2000:
-                    chunks = [response_text[i:i+1900] for i in range(0, len(response_text), 1900)]
-                    for chunk in chunks:
-                        await message.channel.send(chunk, reference=message)
-                else:
-                    await message.channel.send(response_text, reference=message)
-
-            except Exception as e:
-                logger.error(f"Mention error: {e}")
-                await message.channel.send(f"Error processing request.", reference=message)
-
-    @app_commands.command(name="model-status", description="Check Gemini model availability")
+    @app_commands.command(name="model-status", description="Check status")
     async def model_status(self, interaction: discord.Interaction):
-        """Check status of all Gemini models."""
-        await interaction.response.defer(ephemeral=True)
-        
-        status_msg = "🤖 **Gemini Model Status:**\n\n"
+        status_msg = "🤖 **Gemini Model Status:**\n"
         for i, model in enumerate(self.model_list, 1):
             status = self.model_status.get(model, "unknown")
             emoji = "✅" if status == "available" else "⚠️" if "quota" in status else "❌"
-            status_msg += f"{emoji} {i}. `{model}` - {status}\n"
-        
-        await interaction.followup.send(status_msg)
+            status_msg += f"{emoji} `{model}`: {status}\n"
+        await interaction.response.send_message(status_msg, ephemeral=True)
 
-    @app_commands.command(name="clear-chat", description="Clear conversation history")
+    @app_commands.command(name="clear-chat", description="Clear memory")
     async def clear_chat(self, interaction: discord.Interaction):
-        """Clear chat history."""
-        channel_id = interaction.channel_id
-        if channel_id in self.conversation_history:
-            del self.conversation_history[channel_id]
-            await interaction.response.send_message("✅ Memory for this channel has been wiped.", ephemeral=True)
+        if interaction.channel_id in self.conversation_history:
+            del self.conversation_history[interaction.channel_id]
+            await interaction.response.send_message("✅ Memory wiped.", ephemeral=True)
         else:
-            await interaction.response.send_message("No active conversation history to clear.", ephemeral=True)
-
+            await interaction.response.send_message("Nothing to clear.", ephemeral=True)
 
 async def setup(bot: commands.Bot):
-    """Setup cog."""
     await bot.add_cog(Gemini(bot))
