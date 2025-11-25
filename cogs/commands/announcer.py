@@ -41,7 +41,8 @@ class Announcer(commands.Cog):
     def cog_unload(self):
         self.send_announcements.cancel()
     
-    @tasks.loop(minutes=1)
+    # CHANGED: Reduced interval from 1 minute to 5 seconds to prevent timing misses
+    @tasks.loop(seconds=5)
     async def send_announcements(self):
         """Check and send announcements on schedule."""
         now = datetime.now()
@@ -49,29 +50,9 @@ class Announcer(commands.Cog):
         # 1. Sync with DB only once every 30 minutes OR if cache is empty (initial start)
         if now >= self.next_check_time or not self.cached_announcements:
             try:
-                # Update local cache and set next sync for 30 mins later
-                # We fetch ALL active announcements, not just "due" ones, so we can track them locally
-                # (Assuming get_due_announcements returns what we need, but typically we'd need all active to check next_run locally.
-                #  However, based on the previous code, get_due_announcements checks SQL 'next_run <= NOW'.
-                #  To cache effectively, we really want to fetch due items from DB less often? 
-                #  Actually, the prompt's logic is: fetch "due" list every 30 mins? 
-                #  No, that would mean announcements are delayed by 30 mins. 
-                #  Refined Logic: The DB query 'get_due_announcements' returns items where next_run <= NOW.
-                #  To make the cache work as a buffer, we rely on the fact that we process them locally.
-                #  However, strictly following the prompt's logic: 
-                #  "Sync with DB only once every 30 minutes... Check local memory instead of DB for the 1-minute checks"
-                #  This implies we need to fetch *future* announcements too if we want to process them before the next 30m sync.
-                #  For now, I will stick to the provided solution pattern which attempts to reduce the POLL frequency.)
-                
-                # NOTE: The provided solution assumes 'get_due_announcements' fetches pending work. 
-                # Ideally, we should fetch "all active announcements" once every 30m and filter locally.
-                # But to strictly follow the prompt's provided code structure:
-                
                 fetched = await db.get_due_announcements()
                 
-                # Merge fetched with existing cache to avoid duplicates if any logic overlaps, 
-                # or simply replace if we trust the sync. 
-                # Simplest path: Add new ones, update existing.
+                # Merge fetched with existing cache
                 current_ids = {a['id'] for a in self.cached_announcements}
                 for ann in fetched:
                     if ann['id'] not in current_ids:
@@ -91,7 +72,6 @@ class Announcer(commands.Cog):
         
         # 2. Check local memory
         # Filter for announcements that are due NOW
-        # We need to parse the next_run string/object if it's not a datetime in the dict
         due_now = []
         for ann in self.cached_announcements:
             # Handle next_run type (it might be a string from some DB fetches or datetime)
