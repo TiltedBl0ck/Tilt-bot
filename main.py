@@ -43,12 +43,14 @@ class TiltBot(commands.Bot):
         # Load version from config.json for consistency
         self.version = "N/A" # Default version
         try:
-            config_path = Path(__file__).parent / 'config.json'
+            # FIX: Point to the correct file path in the 'configs' folder
+            config_path = Path(__file__).parent / 'configs' / 'config.json'
             with open(config_path, 'r') as config_file:
                 config = json.load(config_file)
                 self.version = config.get("bot", {}).get("version", "N/A")
         except FileNotFoundError:
-            logger.warning("config.json not found, bot version set to N/A.")
+            # We use Path(__file__).parent / 'configs' / 'config.json' for the error msg to be clear
+            logger.warning(f"config.json not found at configs/config.json, bot version set to N/A.")
         except json.JSONDecodeError:
             logger.error("Error decoding config.json, bot version set to N/A.")
 
