@@ -2,6 +2,7 @@ import logging
 import discord
 from discord import app_commands
 from discord.ext import commands
+import asyncio
 import os
 from collections import defaultdict
 import google.generativeai as genai
@@ -12,28 +13,34 @@ logger = logging.getLogger(__name__)
 
 # Configure Gemini API
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
 if not GEMINI_API_KEY:
-    logger.warning("GEMINI_API_KEY not found. AI features will not work.")
+    logger.warning("GEMINI_API_KEY not found. Gemini AI features will not work.")
 else:
     genai.configure(api_key=GEMINI_API_KEY)
 
+
 class Gemini(commands.Cog):
-    """AI chat with web search, conversation memory, and model fallback."""
-    
+    """AI chat with web search, conversation memory, and Google Gemini model fallback."""
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.conversation_history = defaultdict(list)
         self.max_history = 15
         
-        # Prioritized list of models to try
+        # Prioritized list of Google's free models (newest first)
         self.model_list = [
-            "gemini-2.0-flash-exp",   # Newest, fast
-            "gemini-1.5-flash",       # Stable, fast, high quota
-            "gemini-1.5-flash-8b",    # Extremely fast/cheap
-            "gemini-1.5-pro",         # High intelligence, lower quota
-            "gemini-1.0-pro"          # Legacy fallback
+            "gemini-2.0-flash-exp",      # Newest, fastest, best for free tier
+            "gemini-1.5-flash",          # Stable, fast, high quota
+            "gemini-1.5-flash-8b",       # Lightweight, extremely fast
+            "gemini-1.5-pro",            # High intelligence, lower quota
+            "gemini-1.0-pro"             # Legacy fallback
         ]
         
+        # Track which models are currently quota-limited
+        self.model_status = {model: "available" for model in self.model_list}
+        self.current_preferred_model = 0
+        
+        # Safety settings (permissive for Discord bot context)
         self.safety_settings = [
             {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -46,10 +53,11 @@ class Gemini(commands.Cog):
         memory_cog = self.bot.get_cog("Memory")
         serverinfo_cog = self.bot.get_cog("ServerInfo")
         
-        system_msg = "You are a helpful Discord bot. Provide accurate, helpful responses."
-
+        system_msg = "You are a helpful Discord bot. Provide accurate, helpful responses based on available information."
+        
         if memory_cog:
             memory = memory_cog.memory
+            
             if memory.get('system_prompt'):
                 system_msg = memory.get('system_prompt')
             else:
@@ -69,7 +77,7 @@ class Gemini(commands.Cog):
         
         return system_msg
 
-    def format_history_for_gemini(self, history: list, system_instruction: str) -> list:
+    def format_history_for_gemini(self, history: list) -> list:
         """Convert internal dictionary history to Gemini's content format."""
         contents = []
         for msg in history:
@@ -84,44 +92,69 @@ class Gemini(commands.Cog):
 
         system_instruction = self.build_system_message(guild)
         history = self.conversation_history[channel_id]
-        formatted_history = self.format_history_for_gemini(history, system_instruction)
-        
+        formatted_history = self.format_history_for_gemini(history)
+
         final_prompt = user_message
         if web_context:
-            final_prompt = f"Information from web search:\n{web_context}\n\nUser Query: {user_message}"
+            final_prompt = f"**Information from web search:**\n{web_context}\n\n**User Query:** {user_message}"
 
-        # Try models in order
-        for model_name in self.model_list:
+        # Try models in priority order
+        attempted_models = []
+        for i, model_name in enumerate(self.model_list):
             try:
+                logger.info(f"Trying Gemini model: {model_name}")
+                
                 # Initialize Model
                 model = genai.GenerativeModel(
                     model_name=model_name,
                     system_instruction=system_instruction,
                     safety_settings=self.safety_settings
                 )
-
+                
                 # Start chat and generate
                 chat = model.start_chat(history=formatted_history)
-                response = await chat.send_message_async(final_prompt)
+                response = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: chat.send_message(final_prompt)
+                )
                 
-                # If we succeed, return immediately
+                # Success! Update status and return
+                self.model_status[model_name] = "available"
+                logger.info(f"✅ Success with {model_name}")
                 return response.text
 
             except google_exceptions.ResourceExhausted:
-                logger.warning(f"Quota exceeded for {model_name}. Trying next model...")
-                continue # Try next model in loop
-            except Exception as e:
-                # Catch 429s that might come as generic exceptions
-                if "429" in str(e) or "quota" in str(e).lower():
-                     logger.warning(f"Quota error (generic) for {model_name}: {e}. Trying next model...")
-                     continue
-                
-                logger.error(f"Error with {model_name}: {e}")
-                # For non-quota errors, we might want to stop or try next depending on severity.
-                # Usually best to try next for robustness.
+                self.model_status[model_name] = "quota_exceeded"
+                logger.warning(f"⚠️ Quota exceeded for {model_name}. Trying next model...")
+                attempted_models.append(f"{model_name} (quota)")
                 continue
 
-        return "⚠️ All AI models are currently overloaded or out of quota. Please try again later."
+            except Exception as e:
+                error_str = str(e).lower()
+                
+                # Handle generic 429 quota errors
+                if "429" in str(e) or "quota" in error_str or "rate" in error_str:
+                    self.model_status[model_name] = "quota_exceeded"
+                    logger.warning(f"⚠️ Rate limited on {model_name}: {e}")
+                    attempted_models.append(f"{model_name} (rate_limit)")
+                    continue
+                
+                # Handle 503 service unavailable
+                if "503" in str(e) or "unavailable" in error_str:
+                    self.model_status[model_name] = "unavailable"
+                    logger.warning(f"⚠️ Service unavailable for {model_name}")
+                    attempted_models.append(f"{model_name} (unavailable)")
+                    continue
+                
+                logger.error(f"❌ Error with {model_name}: {e}")
+                self.model_status[model_name] = "error"
+                attempted_models.append(f"{model_name} (error)")
+                continue
+
+        # All models failed
+        status_report = "\n".join(attempted_models) if attempted_models else "All models failed"
+        logger.error(f"❌ All Gemini models exhausted: {status_report}")
+        return f"⚠️ **All AI models are currently unavailable.**\n\nAttempted:\n{status_report}\n\nPlease try again in a few moments."
 
     def update_history(self, channel_id: int, user_message: str, ai_response: str):
         """Update conversation history."""
@@ -129,6 +162,7 @@ class Gemini(commands.Cog):
         history.append({"role": "user", "content": user_message})
         history.append({"role": "assistant", "content": ai_response})
         
+        # Keep history within limits
         if len(history) > self.max_history * 2:
             self.conversation_history[channel_id] = history[-(self.max_history * 2):]
 
@@ -142,19 +176,21 @@ class Gemini(commands.Cog):
             web_context = ""
             try:
                 if len(prompt) > 5:
+                    logger.info(f"Searching for: {prompt}")
                     web_context = await get_latest_info(prompt)
             except Exception as e:
                 logger.warning(f"Web search failed: {e}")
-            
+
             response_text = await self.get_gemini_response(
-                interaction.channel_id, 
-                prompt, 
+                interaction.channel_id,
+                prompt,
                 web_context=web_context,
                 guild=interaction.guild
             )
-            
+
             self.update_history(interaction.channel_id, prompt, response_text)
 
+            # Split response into chunks if too long
             if len(response_text) > 1900:
                 chunks = [response_text[i:i+1900] for i in range(0, len(response_text), 1900)]
                 await interaction.followup.send(f"**You:** {prompt}\n\n{chunks[0]}")
@@ -162,7 +198,7 @@ class Gemini(commands.Cog):
                     await interaction.followup.send(chunk)
             else:
                 await interaction.followup.send(f"**You:** {prompt}\n\n{response_text}")
-            
+
         except Exception as e:
             logger.error(f"Chat error: {e}")
             await interaction.followup.send(f"Error: {str(e)[:100]}")
@@ -172,11 +208,13 @@ class Gemini(commands.Cog):
         """Handle mentions."""
         if message.author.bot or not self.bot.user.mentioned_in(message):
             return
+
         if message.mention_everyone:
             return
 
         async with message.channel.typing():
             prompt = message.content.replace(f'<@!{self.bot.user.id}>', '').replace(f'<@{self.bot.user.id}>', '').strip()
+            
             if not prompt:
                 await message.channel.send("Hi! I'm powered by Google Gemini. How can I help?", reference=message)
                 return
@@ -188,26 +226,40 @@ class Gemini(commands.Cog):
                         web_context = await get_latest_info(prompt)
                 except Exception as e:
                     logger.warning(f"Web search failed: {e}")
-                
+
                 response_text = await self.get_gemini_response(
-                    message.channel.id, 
-                    prompt, 
+                    message.channel.id,
+                    prompt,
                     web_context=web_context,
                     guild=message.guild
                 )
-                
+
                 self.update_history(message.channel.id, prompt, response_text)
 
+                # Split response into chunks if too long
                 if len(response_text) > 2000:
                     chunks = [response_text[i:i+1900] for i in range(0, len(response_text), 1900)]
                     for chunk in chunks:
                         await message.channel.send(chunk, reference=message)
                 else:
                     await message.channel.send(response_text, reference=message)
-                
+
             except Exception as e:
                 logger.error(f"Mention error: {e}")
                 await message.channel.send(f"Error processing request.", reference=message)
+
+    @app_commands.command(name="model-status", description="Check Gemini model availability")
+    async def model_status(self, interaction: discord.Interaction):
+        """Check status of all Gemini models."""
+        await interaction.response.defer(ephemeral=True)
+        
+        status_msg = "🤖 **Gemini Model Status:**\n\n"
+        for i, model in enumerate(self.model_list, 1):
+            status = self.model_status.get(model, "unknown")
+            emoji = "✅" if status == "available" else "⚠️" if "quota" in status else "❌"
+            status_msg += f"{emoji} {i}. `{model}` - {status}\n"
+        
+        await interaction.followup.send(status_msg)
 
     @app_commands.command(name="clear-chat", description="Clear conversation history")
     async def clear_chat(self, interaction: discord.Interaction):
@@ -218,6 +270,7 @@ class Gemini(commands.Cog):
             await interaction.response.send_message("✅ Memory for this channel has been wiped.", ephemeral=True)
         else:
             await interaction.response.send_message("No active conversation history to clear.", ephemeral=True)
+
 
 async def setup(bot: commands.Bot):
     """Setup cog."""
