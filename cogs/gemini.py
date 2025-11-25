@@ -33,12 +33,12 @@ class Gemini(commands.Cog):
         self.max_history = 15
         
         # UPDATED MODEL LIST (Latest as of 2025)
-        # We try the newest models first, then fall back to stable ones
+        # Prioritize 1.5 Flash/Pro for stability with Tools, then 2.0 for raw power
         self.model_list = [
-            "gemini-2.0-flash",          
+            "gemini-1.5-flash",          # Most stable for Search Grounding
+            "gemini-1.5-pro",            # High intelligence
+            "gemini-2.0-flash",          # Newest (Experimental support for tools)
             "gemini-2.0-flash-exp",
-            "gemini-1.5-pro",
-            "gemini-1.5-flash",
             "gemini-1.5-flash-8b"
         ]
         
@@ -58,10 +58,10 @@ class Gemini(commands.Cog):
         
         system_msg = (
             "You are Tilt-bot, a helpful and intelligent Discord bot. "
-            "You have access to real-time information provided in the prompt context. "
-            "ALWAYS use the provided 'Search Results' to answer questions about current events, "
-            "prices, news, or factual queries. If the search results contain the answer, "
-            "state it clearly."
+            "You have access to real-time information via Google Search. "
+            "ALWAYS use the Google Search tool or provided search results to answer questions about "
+            "current events, prices, news, time, or factual queries. "
+            "If you use the search tool, simply answer based on the results."
         )
         
         if memory_cog:
@@ -100,6 +100,7 @@ class Gemini(commands.Cog):
         history = self.conversation_history[channel_id]
         formatted_history = self.format_history_for_gemini(history)
 
+        # Enhance prompt with web context if available
         final_prompt = user_message
         if web_context:
             final_prompt = (
@@ -110,81 +111,67 @@ class Gemini(commands.Cog):
 
         attempted_models = []
         
+        # STRATEGY: 
+        # 1. Try all models WITH Search Tools.
+        # 2. If all fail, try all models WITHOUT Tools (Basic fallback).
+        
+        # --- PHASE 1: Try with Tools ---
         for model_name in self.model_list:
             try:
-                # ---------------------------------------------------------
-                # ATTEMPT 1: Try with Native Google Search Tool
-                # ---------------------------------------------------------
-                try:
-                    model = genai.GenerativeModel(
-                        model_name=model_name,
-                        system_instruction=system_instruction,
-                        safety_settings=self.safety_settings,
-                        tools=[{"google_search": {}}] # Try native search
-                    )
-                    chat = model.start_chat(history=formatted_history)
-                    response = await asyncio.get_event_loop().run_in_executor(
-                        None, lambda: chat.send_message(final_prompt)
-                    )
-                    self.model_status[model_name] = "available"
-                    return response.text
-
-                # ---------------------------------------------------------
-                # ATTEMPT 2: Fallback (No Tools) if Attempt 1 fails
-                # ---------------------------------------------------------
-                except Exception as tool_error:
-                    # If it's a critical API error (like 429 Quota), don't retry, just fail
-                    if "429" in str(tool_error) or "quota" in str(tool_error).lower():
-                        raise tool_error
-
-                    # Otherwise, assume it's a library/tool error and retry without tools
-                    # logger.warning(f"Tool attempt failed for {model_name}, retrying basic: {tool_error}")
-                    
-                    model = genai.GenerativeModel(
-                        model_name=model_name,
-                        system_instruction=system_instruction,
-                        safety_settings=self.safety_settings
-                        # No tools
-                    )
-                    chat = model.start_chat(history=formatted_history)
-                    response = await asyncio.get_event_loop().run_in_executor(
-                        None, lambda: chat.send_message(final_prompt)
-                    )
-                    self.model_status[model_name] = "available (basic)"
-                    return response.text
-
-            # ---------------------------------------------------------
-            # ERROR HANDLING
-            # ---------------------------------------------------------
+                model = genai.GenerativeModel(
+                    model_name=model_name,
+                    system_instruction=system_instruction,
+                    safety_settings=self.safety_settings,
+                    tools=[{"google_search": {}}] # Native Google Search
+                )
+                chat = model.start_chat(history=formatted_history)
+                response = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: chat.send_message(final_prompt)
+                )
+                self.model_status[model_name] = "available (with tools)"
+                return response.text
             except Exception as e:
-                error_str = str(e).lower()
-                
-                if "429" in error_str or "quota" in error_str or "exhausted" in error_str:
-                    self.model_status[model_name] = "quota_exceeded"
-                    attempted_models.append(f"{model_name}: 🛑 Quota Exceeded")
-                
-                elif "404" in error_str or "not found" in error_str:
-                    self.model_status[model_name] = "not_found"
-                    attempted_models.append(f"{model_name}: ❓ Not Found")
-                
-                elif "400" in error_str or "invalid argument" in error_str:
-                     # This usually means the API key is invalid or model doesn't support params
-                    self.model_status[model_name] = "invalid_arg"
-                    attempted_models.append(f"{model_name}: ⚠️ Invalid Arg/Key")
-                
+                # Log error but continue to next model in Phase 1
+                short_err = str(e).lower()
+                if "429" in short_err or "quota" in short_err:
+                     self.model_status[model_name] = "quota_exceeded"
                 else:
-                    logger.error(f"Error with {model_name}: {e}")
-                    self.model_status[model_name] = "error"
-                    # Capture a snippet of the actual error for debugging
-                    short_err = str(e)[:40]
-                    attempted_models.append(f"{model_name}: ❌ {short_err}...")
-                
-                await asyncio.sleep(0.5)
+                     self.model_status[model_name] = f"tool_error: {short_err[:20]}"
+                attempted_models.append(f"{model_name} (Tools): {short_err[:40]}...")
                 continue
 
-        # If we reach here, all models failed
+        # --- PHASE 2: Fallback (Basic) ---
+        # If we are here, NO model worked with tools. We must fallback to basic text generation.
+        logger.warning(f"All models failed with tools. Falling back to basic generation. Errors: {attempted_models}")
+        
+        for model_name in self.model_list:
+            try:
+                model = genai.GenerativeModel(
+                    model_name=model_name,
+                    system_instruction=system_instruction,
+                    safety_settings=self.safety_settings
+                    # No tools
+                )
+                chat = model.start_chat(history=formatted_history)
+                response = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: chat.send_message(final_prompt)
+                )
+                self.model_status[model_name] = "available (basic)"
+                
+                # Append a disclaimer if we have no web context AND we are in fallback mode
+                if not web_context:
+                    return response.text + "\n\n*(Note: I could not access real-time internet data for this response.)*"
+                return response.text
+
+            except Exception as e:
+                short_err = str(e).lower()
+                self.model_status[model_name] = "error"
+                attempted_models.append(f"{model_name} (Basic): {short_err[:40]}...")
+                continue
+
+        # If we reach here, absolutely everything failed
         status_report = "\n".join(attempted_models)
-        return f"⚠️ **AI Unavailable.**\n\n**Debug Info:**\n{status_report}\n\n*Check your console logs for full details.*"
+        return f"⚠️ **AI Unavailable.**\n\n**Debug Info:**\n{status_report}\n\n*Check console logs.*"
 
     def update_history(self, channel_id: int, user_message: str, ai_response: str):
         history = self.conversation_history[channel_id]
@@ -199,12 +186,13 @@ class Gemini(commands.Cog):
         await interaction.response.defer(thinking=True)
         try:
             web_context = ""
+            # SEARCH TRIGGER: Try manual search first
             if len(prompt) > 4:
                 try:
                     if hasattr(get_latest_info, '__call__'):
                         web_context = await get_latest_info(prompt)
                 except Exception as e:
-                    logger.warning(f"Search error: {e}")
+                    logger.warning(f"Manual Search error: {e}")
 
             response_text = await self.get_gemini_response(
                 interaction.channel_id, prompt, web_context, interaction.guild
@@ -233,7 +221,7 @@ class Gemini(commands.Cog):
             prompt = message.content.replace(f'<@!{self.bot.user.id}>', '').replace(f'<@{self.bot.user.id}>', '').strip()
             
             if not prompt:
-                await message.channel.send("Hi! I'm Gemini 2.0. How can I help?", reference=message)
+                await message.channel.send("Hi! I'm Gemini. How can I help?", reference=message)
                 return
 
             web_context = ""
@@ -260,7 +248,6 @@ class Gemini(commands.Cog):
         status_msg = "🤖 **Gemini Model Status:**\n"
         for i, model in enumerate(self.model_list, 1):
             status = self.model_status.get(model, "unknown")
-            # Simple status check
             if "available" in status:
                 emoji = "✅"
             elif "quota" in status:
