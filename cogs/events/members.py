@@ -1,10 +1,10 @@
 import discord
 from discord.ext import commands, tasks
-from datetime import datetime, timezone # Use timezone-aware datetime
-import cogs.utils.db as db_utils # Import module alias
+from datetime import datetime, timezone 
+import cogs.utils.db as db_utils 
 import logging
-import asyncio # Import asyncio for sleep
-import asyncpg # Import asyncpg for exception handling
+import asyncio 
+import sqlite3 # Replaced asyncpg with sqlite3 for error handling
 
 logger = logging.getLogger(__name__)
 
@@ -12,7 +12,7 @@ class MemberEvents(commands.Cog):
     """Handles events related to guild members using cached config and server stats."""
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        # Start task only if pool initialization succeeded during startup
+        # Start task only if database is initialized
         if db_utils.pool is not None:
              self.update_server_stats.start()
         else:
@@ -26,37 +26,48 @@ class MemberEvents(commands.Cog):
 
 
     # OPTIMIZATION: Increased interval from 10 minutes to 30 minutes
-    # This reduces database wakeups and API calls significantly.
     @tasks.loop(minutes=30)
     async def update_server_stats(self):
         """A background task that updates server statistics channels every 30 minutes."""
         logger.debug("Running update_server_stats task.")
+        
+        # Check if DB is available (using the compatibility shim or connection check)
         if db_utils.pool is None:
-            # This check ensures the task stops trying if the pool becomes unavailable later
-            logger.warning("Database pool not available, skipping server stats update.")
+            logger.warning("Database not available, skipping server stats update.")
             if self.update_server_stats.is_running():
-                self.update_server_stats.cancel() # Stop the task if DB is gone
+                self.update_server_stats.cancel() 
             return
 
         guild_configs_to_update = []
         try:
             # Fetch only the necessary IDs from guilds that have stats enabled
             async with db_utils.get_db_connection() as conn:
-                configs = await conn.fetch("""
+                # UPDATED: Use aiosqlite syntax (execute + fetchall) instead of asyncpg (fetch)
+                async with conn.execute("""
                     SELECT guild_id, member_count_channel_id, bot_count_channel_id, role_count_channel_id
                     FROM guild_config
                     WHERE stats_category_id IS NOT NULL
                       AND (member_count_channel_id IS NOT NULL OR
                            bot_count_channel_id IS NOT NULL OR
                            role_count_channel_id IS NOT NULL)
-                """)
-                # Convert records to dicts immediately for easier processing
-                guild_configs_to_update = [dict(record) for record in configs]
+                """) as cursor:
+                    rows = await cursor.fetchall()
+                    
+                # Convert tuples to dicts manually since we don't have a row factory set
+                guild_configs_to_update = [
+                    {
+                        "guild_id": row[0],
+                        "member_count_channel_id": row[1],
+                        "bot_count_channel_id": row[2],
+                        "role_count_channel_id": row[3]
+                    } 
+                    for row in rows
+                ]
 
-        except (ConnectionError, asyncio.TimeoutError, asyncpg.PostgresError) as e: # Use imported asyncpg
+        except (ConnectionError, asyncio.TimeoutError, sqlite3.Error) as e: 
             logger.error(f"Database error fetching guilds for stats update: {e}")
-            await asyncio.sleep(60) # Wait a bit before retrying if DB error occurs
-            return # Skip this iteration
+            await asyncio.sleep(60) 
+            return 
         except Exception as e:
              logger.error(f"Unexpected error fetching guilds for stats update: {e}", exc_info=True)
              await asyncio.sleep(60)
@@ -65,7 +76,7 @@ class MemberEvents(commands.Cog):
 
         logger.debug(f"Found {len(guild_configs_to_update)} guilds with server stats channels configured.")
 
-        # Process each guild
+        # Process each guild (Rest of the logic remains the same)
         for config in guild_configs_to_update:
             guild = self.bot.get_guild(config["guild_id"])
             if not guild:
@@ -73,9 +84,8 @@ class MemberEvents(commands.Cog):
                 continue
 
             logger.debug(f"Updating stats for guild: {guild.name} ({guild.id})")
-            update_tasks = [] # Collect edit tasks for this guild
+            update_tasks = [] 
 
-            # --- Update Member Count ---
             if config.get("member_count_channel_id"):
                 member_channel = guild.get_channel(config["member_count_channel_id"])
                 if member_channel and isinstance(member_channel, discord.VoiceChannel):
@@ -85,7 +95,6 @@ class MemberEvents(commands.Cog):
                             member_channel.edit(name=new_name, reason="Update Server Stats")
                         )
 
-            # --- Update Bot Count ---
             if config.get("bot_count_channel_id"):
                 bot_channel = guild.get_channel(config["bot_count_channel_id"])
                 if bot_channel and isinstance(bot_channel, discord.VoiceChannel):
@@ -96,18 +105,16 @@ class MemberEvents(commands.Cog):
                             bot_channel.edit(name=new_name, reason="Update Server Stats")
                          )
 
-            # --- Update Role Count ---
             if config.get("role_count_channel_id"):
                 role_channel = guild.get_channel(config["role_count_channel_id"])
                 if role_channel and isinstance(role_channel, discord.VoiceChannel):
-                     role_count = len(guild.roles) # Excludes @everyone implicitly
+                     role_count = len(guild.roles) 
                      new_name = f"📜 Roles: {role_count}"
                      if role_channel.name != new_name:
                           update_tasks.append(
                             role_channel.edit(name=new_name, reason="Update Server Stats")
                           )
 
-            # --- Execute updates for the current guild ---
             if update_tasks:
                 logger.debug(f"Attempting {len(update_tasks)} channel edits for guild {guild.id}")
                 results = await asyncio.gather(*update_tasks, return_exceptions=True)
@@ -125,7 +132,6 @@ class MemberEvents(commands.Cog):
                         if isinstance(result, discord.Forbidden):
                             logger.error(f"Missing permissions to edit stats channel ({channel_type}) in {guild.name}")
                         elif isinstance(result, discord.HTTPException):
-                             # Rate limits are common here, logging as error might be too noisy if frequent, but good for debugging
                              logger.warning(f"HTTP error editing stats channel ({channel_type}) in {guild.name}: {result.status} {result.text}")
                         else:
                             logger.error(f"Unexpected error editing stats channel ({channel_type}) in {guild.name}: {result}", exc_info=result)
@@ -134,7 +140,6 @@ class MemberEvents(commands.Cog):
                 if success_count > 0:
                      logger.debug(f"Successfully updated {success_count} stats channels for {guild.name}")
 
-            # Check for invalid/missing channels after attempting updates
             if config.get("member_count_channel_id") and not guild.get_channel(config["member_count_channel_id"]):
                  logger.warning(f"Member count channel {config['member_count_channel_id']} not found in {guild.name}.")
             if config.get("bot_count_channel_id") and not guild.get_channel(config["bot_count_channel_id"]):
@@ -143,11 +148,9 @@ class MemberEvents(commands.Cog):
                  logger.warning(f"Role count channel {config['role_count_channel_id']} not found in {guild.name}.")
 
 
-            await asyncio.sleep(1) # Small delay between guilds
+            await asyncio.sleep(1) 
 
-        # Log completion of the loop iteration
         logger.debug("Finished update_server_stats iteration.")
-
 
     @update_server_stats.before_loop
     async def before_update_stats(self):
@@ -159,7 +162,7 @@ class MemberEvents(commands.Cog):
     async def on_stats_error(self, error):
         """Handles errors within the update_server_stats task loop."""
         logger.error(f"Unhandled error in update_server_stats loop: {error}", exc_info=True)
-        await asyncio.sleep(60) # Wait before potentially restarting
+        await asyncio.sleep(60) 
 
 
     @commands.Cog.listener("on_member_join")
