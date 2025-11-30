@@ -2,7 +2,7 @@ import aiosqlite
 import os
 import logging
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
 from contextlib import asynccontextmanager
 
@@ -20,6 +20,9 @@ _config_cache: Dict[int, Dict[str, Any]] = {}
 _cache_lock = asyncio.Lock()
 _cache_ttl = 3600
 _cache_timestamps: Dict[int, float] = {}
+
+# --- Timezone Setup ---
+UTC_PLUS_8 = timezone(timedelta(hours=8))
 
 # --- Database Initialization ---
 async def init_db() -> bool:
@@ -205,7 +208,9 @@ async def update_counting_stats(guild_id: int, current_count: int, last_counter_
 
 # --- Announcements Functions ---
 def get_next_run_time(frequency: str) -> datetime:
-    now = datetime.now()
+    # FORCE UTC+8
+    now = datetime.now(UTC_PLUS_8)
+    
     freq_map = {
         "1min": timedelta(minutes=1), "3min": timedelta(minutes=3),
         "5min": timedelta(minutes=5), "10min": timedelta(minutes=10),
@@ -217,7 +222,9 @@ def get_next_run_time(frequency: str) -> datetime:
         "1month": timedelta(days=30),
     }
     delta = freq_map.get(frequency)
-    return now + delta if delta else None
+    # Return naive datetime for SQLite storage compatibility, but based on UTC+8 calculation
+    next_run = now + delta if delta else None
+    return next_run.replace(tzinfo=None) if next_run else None
 
 async def create_announcement(
     server_id: int, 
@@ -230,7 +237,8 @@ async def create_announcement(
     """Create a new announcement with optional manual start time."""
     
     if manual_next_run:
-        next_run = manual_next_run
+        # Ensure manual time is treated as naive for DB storage
+        next_run = manual_next_run.replace(tzinfo=None)
     else:
         next_run = get_next_run_time(frequency)
         

@@ -2,19 +2,22 @@ import logging
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from cogs.utils import db
 
 logger = logging.getLogger(__name__)
 
+# --- Timezone Setup ---
+UTC_PLUS_8 = timezone(timedelta(hours=8))
 
 class Announcer(commands.Cog):
     """DotNotify-style announcement system with recurring messages - Database Backed."""
     
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.next_check_time = datetime.now()
+        # Use UTC+8 for initial check time
+        self.next_check_time = datetime.now(UTC_PLUS_8).replace(tzinfo=None)
         self.cached_announcements = []
         self.send_announcements.start()
     
@@ -40,18 +43,25 @@ class Announcer(commands.Cog):
         return freq_map.get(frequency, frequency)
     
     def parse_time_input(self, time_str: str) -> Optional[datetime]:
-        """Parse user time input into datetime."""
+        """Parse user time input into datetime (UTC+8 enforced)."""
         formats = ["%Y-%m-%d %H:%M", "%d-%m-%Y %H:%M", "%H:%M", "%Y/%m/%d %H:%M"]
-        now = datetime.now()
+        
+        # Current time in UTC+8
+        now = datetime.now(UTC_PLUS_8)
+        
         for fmt in formats:
             try:
                 dt = datetime.strptime(time_str, fmt)
-                # If format is just time, attach today's date
+                
+                # If format is just time, attach today's date (in UTC+8 context)
                 if fmt == "%H:%M":
                     dt = dt.replace(year=now.year, month=now.month, day=now.day)
-                    # If time passed today, assume tomorrow
-                    if dt < now: 
+                    # If time passed today in UTC+8, assume tomorrow
+                    # We compare naive datetimes here
+                    if dt < now.replace(tzinfo=None): 
                         dt += timedelta(days=1)
+                        
+                # Ensure the result is naive for DB storage consistency
                 return dt
             except ValueError:
                 continue
@@ -62,8 +72,9 @@ class Announcer(commands.Cog):
     
     @tasks.loop(seconds=5)
     async def send_announcements(self):
-        """Check and send announcements on schedule."""
-        now = datetime.now()
+        """Check and send announcements on schedule (Using UTC+8)."""
+        # Get current time in UTC+8, then make naive for comparison with DB
+        now = datetime.now(UTC_PLUS_8).replace(tzinfo=None)
 
         # 1. Sync with DB only once every 30 minutes OR if cache is empty
         if now >= self.next_check_time or not self.cached_announcements:
