@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 # --- Global Database Connection ---
 _db_connection: Optional[aiosqlite.Connection] = None
 
-# CHANGED: Point to the new location inside the 'database' folder
+# Point to the database/local.db file
 DB_FILE = "database/local.db"
 
 # --- In-Memory Cache ---
@@ -297,6 +297,26 @@ async def update_announcement_next_run(ann_id: int, frequency: str) -> bool:
         logger.error(f"Failed to update announcement {ann_id}: {e}")
         return False
 
+async def update_announcement_details(ann_id: int, server_id: int, updates: Dict[str, Any]) -> bool:
+    """Updates dynamic fields for an announcement."""
+    if not updates: return False
+    
+    try:
+        cols = list(updates.keys())
+        set_parts = [f"{col} = ?" for col in cols]
+        values = list(updates.values())
+        values.append(ann_id)
+        values.append(server_id)
+        
+        sql = f"UPDATE announcements SET {', '.join(set_parts)} WHERE id = ? AND server_id = ?"
+        
+        await _db_connection.execute(sql, values)
+        await _db_connection.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Failed to update announcement details: {e}")
+        return False
+
 async def stop_announcement(ann_id: int, server_id: int) -> bool:
     try:
         await _db_connection.execute(
@@ -338,5 +358,5 @@ async def mark_announcement_inactive(ann_id: int) -> bool:
         logger.error(f"Error marking inactive: {e}")
         return False
 
-# Re-export pool for compatibility with other files checking for `db_utils.pool`
+# Re-export pool for compatibility
 pool = "DummyValueForCompatibility"
