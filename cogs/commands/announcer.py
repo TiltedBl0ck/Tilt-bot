@@ -39,6 +39,24 @@ class Announcer(commands.Cog):
         }
         return freq_map.get(frequency, frequency)
     
+    def parse_time_input(self, time_str: str) -> Optional[datetime]:
+        """Parse user time input into datetime."""
+        formats = ["%Y-%m-%d %H:%M", "%d-%m-%Y %H:%M", "%H:%M", "%Y/%m/%d %H:%M"]
+        now = datetime.now()
+        for fmt in formats:
+            try:
+                dt = datetime.strptime(time_str, fmt)
+                # If format is just time, attach today's date
+                if fmt == "%H:%M":
+                    dt = dt.replace(year=now.year, month=now.month, day=now.day)
+                    # If time passed today, assume tomorrow
+                    if dt < now: 
+                        dt += timedelta(days=1)
+                return dt
+            except ValueError:
+                continue
+        return None
+
     def cog_unload(self):
         self.send_announcements.cancel()
     
@@ -117,9 +135,135 @@ class Announcer(commands.Cog):
     
     announce_group = app_commands.Group(name="announce", description="Announcement management")
     
-    @announce_group.command(name="create", description="Create a recurring announcement")
-    @app_commands.describe(message="Message to announce", channel="Channel to send to")
-    async def announce_create(self, interaction: discord.Interaction, message: str, channel: discord.TextChannel):
+    # --- Shared Selection View for Frequency ---
+    class FrequencySelect(discord.ui.Select):
+        def __init__(self, parent_cog, msg, ch, guild_id, user_id, start_dt, edit_id=None):
+            self.parent_cog = parent_cog
+            self.message = msg
+            self.channel = ch
+            self.guild_id = guild_id
+            self.user_id = user_id
+            self.start_dt = start_dt
+            self.edit_id = edit_id # If set, we are editing, not creating
+            
+            options = [
+                discord.SelectOption(label="Every 1 Minute", value="1min", emoji="⏱️"),
+                discord.SelectOption(label="Every 3 Minutes", value="3min", emoji="⏱️"),
+                discord.SelectOption(label="Every 5 Minutes", value="5min", emoji="⏱️"),
+                discord.SelectOption(label="Every 10 Minutes", value="10min", emoji="⏱️"),
+                discord.SelectOption(label="Every 15 Minutes", value="15min", emoji="⏱️"),
+                discord.SelectOption(label="Every 30 Minutes", value="30min", emoji="⏰"),
+                discord.SelectOption(label="Every 1 Hour", value="1hr", emoji="🕐"),
+                discord.SelectOption(label="Every 3 Hours", value="3hrs", emoji="🕐"),
+                discord.SelectOption(label="Every 6 Hours", value="6hrs", emoji="🕐"),
+                discord.SelectOption(label="Every 12 Hours", value="12hrs", emoji="🕑"),
+                discord.SelectOption(label="Every 1 Day", value="1day", emoji="📅"),
+                discord.SelectOption(label="Every 3 Days", value="3days", emoji="📅"),
+                discord.SelectOption(label="Every 1 Week", value="1week", emoji="📆"),
+                discord.SelectOption(label="Every 2 Weeks", value="2weeks", emoji="📆"),
+                discord.SelectOption(label="Every 1 Month", value="1month", emoji="📆"),
+            ]
+            
+            mode_text = "new frequency" if edit_id else "frequency"
+            super().__init__(placeholder=f"Choose {mode_text}...", min_values=1, max_values=1, options=options)
+        
+        async def callback(self, inter: discord.Interaction):
+            freq_value = self.values[0]
+            try:
+                await inter.response.defer()
+                
+                # Logic split: Create vs Edit
+                if self.edit_id:
+                    # --- EDIT MODE ---
+                    updates = {
+                        'message': self.message,
+                        'channel_id': self.channel.id,
+                        'frequency': freq_value,
+                        'next_run': self.start_dt.isoformat()
+                    }
+                    
+                    success = await db.update_announcement_details(self.edit_id, self.guild_id, updates)
+                    
+                    if success:
+                        # Update cache
+                        for i, ann in enumerate(self.parent_cog.cached_announcements):
+                            if ann['id'] == self.edit_id:
+                                self.parent_cog.cached_announcements[i].update({
+                                    'message': self.message,
+                                    'channel_id': self.channel.id,
+                                    'frequency': freq_value,
+                                    'next_run': self.start_dt
+                                })
+                                break
+                                
+                        description = [
+                            "📝 **Message:** Updated",
+                            f"📺 **Channel:** {self.channel.mention}",
+                            f"⏱️ **Frequency:** {self.parent_cog.get_frequency_display(freq_value)}",
+                            f"⏭️ **Next Run:** {self.start_dt.strftime('%Y-%m-%d %H:%M')}"
+                        ]
+                        
+                        embed = discord.Embed(
+                            title="✅ Announcement Updated",
+                            description="\n".join(description),
+                            color=discord.Color.green()
+                        )
+                        embed.set_footer(text=f"ID: {self.edit_id}")
+                        await inter.followup.send(embed=embed)
+                    else:
+                        await inter.followup.send("❌ Failed to update database.", ephemeral=True)
+                
+                else:
+                    # --- CREATE MODE ---
+                    ann_id = await db.create_announcement(
+                        self.guild_id, self.channel.id, self.message, freq_value, self.user_id,
+                        manual_next_run=self.start_dt
+                    )
+                    
+                    if ann_id is None:
+                        await inter.followup.send("❌ Failed to create announcement", ephemeral=True)
+                        return
+                    
+                    new_announcement = {
+                        'id': ann_id, 'server_id': self.guild_id, 'channel_id': self.channel.id,
+                        'message': self.message, 'frequency': freq_value,
+                        'next_run': self.start_dt, 'created_by': self.user_id, 'is_active': True
+                    }
+                    self.parent_cog.cached_announcements.append(new_announcement)
+
+                    # Determine next run display
+                    freq_display = self.parent_cog.get_frequency_display(freq_value)
+                    
+                    success_embed = discord.Embed(
+                        title="✅ Announcement Created",
+                        description=f"**ID:** `{ann_id}`\n**Channel:** {self.channel.mention}\n**Frequency:** {freq_display}\n**Next Send:** {self.start_dt.strftime('%Y-%m-%d %H:%M')}",
+                        color=discord.Color.green()
+                    )
+                    success_embed.add_field(name="Message Preview", value=self.message[:200], inline=False)
+                    await inter.followup.send(embed=success_embed)
+
+            except Exception as e:
+                try: await inter.followup.send(f"❌ Error: {str(e)[:100]}", ephemeral=True)
+                except: pass
+    
+    class FrequencyView(discord.ui.View):
+        def __init__(self, parent_cog, msg, ch, guild_id, user_id, start_dt, edit_id=None):
+            super().__init__(timeout=300)
+            self.add_item(Announcer.FrequencySelect(parent_cog, msg, ch, guild_id, user_id, start_dt, edit_id))
+
+    @announce_group.command(name="create", description="Create a recurring announcement (Start Time Required)")
+    @app_commands.describe(
+        message="Message to announce", 
+        channel="Channel to send to",
+        start_time="Start time (HH:MM or YYYY-MM-DD HH:MM). Example: 14:30"
+    )
+    async def announce_create(
+        self, 
+        interaction: discord.Interaction, 
+        message: str, 
+        channel: discord.TextChannel,
+        start_time: str
+    ):
         """Create a new announcement."""
         await interaction.response.defer(ephemeral=True)
         
@@ -130,216 +274,122 @@ class Announcer(commands.Cog):
         if len(message) > 1900:
             await interaction.followup.send("❌ Message too long (max 1900 characters)")
             return
+
+        parsed_start = self.parse_time_input(start_time)
+        if not parsed_start:
+            await interaction.followup.send("❌ Invalid time format. Use `HH:MM` (24h) or `YYYY-MM-DD HH:MM`", ephemeral=True)
+            return
         
-        try:
-            embed = discord.Embed(
-                title="📢 Select Announcement Frequency",
-                description=f"**Server:** {interaction.guild.name}\n**Channel:** {channel.mention}\n**Message Preview:** {message[:150]}",
-                color=discord.Color.blue()
-            )
-            
-            class FrequencySelect(discord.ui.Select):
-                def __init__(self, parent_cog, msg, ch, guild_id, user_id):
-                    self.parent_cog = parent_cog
-                    self.message = msg
-                    self.channel = ch
-                    self.guild_id = guild_id
-                    self.user_id = user_id
-                    options = [
-                        discord.SelectOption(label="Every 1 Minute", value="1min", emoji="⏱️"),
-                        discord.SelectOption(label="Every 3 Minutes", value="3min", emoji="⏱️"),
-                        discord.SelectOption(label="Every 5 Minutes", value="5min", emoji="⏱️"),
-                        discord.SelectOption(label="Every 10 Minutes", value="10min", emoji="⏱️"),
-                        discord.SelectOption(label="Every 15 Minutes", value="15min", emoji="⏱️"),
-                        discord.SelectOption(label="Every 30 Minutes", value="30min", emoji="⏰"),
-                        discord.SelectOption(label="Every 1 Hour", value="1hr", emoji="🕐"),
-                        discord.SelectOption(label="Every 3 Hours", value="3hrs", emoji="🕐"),
-                        discord.SelectOption(label="Every 6 Hours", value="6hrs", emoji="🕐"),
-                        discord.SelectOption(label="Every 12 Hours", value="12hrs", emoji="🕑"),
-                        discord.SelectOption(label="Every 1 Day", value="1day", emoji="📅"),
-                        discord.SelectOption(label="Every 3 Days", value="3days", emoji="📅"),
-                        discord.SelectOption(label="Every 1 Week", value="1week", emoji="📆"),
-                        discord.SelectOption(label="Every 2 Weeks", value="2weeks", emoji="📆"),
-                        discord.SelectOption(label="Every 1 Month", value="1month", emoji="📆"),
-                    ]
-                    super().__init__(placeholder="Choose frequency...", min_values=1, max_values=1, options=options)
-                
-                async def callback(self, inter: discord.Interaction):
-                    freq_value = self.values[0]
-                    try:
-                        await inter.response.defer()
-                        ann_id = await db.create_announcement(self.guild_id, self.channel.id, self.message, freq_value, self.user_id)
-                        
-                        if ann_id is None:
-                            await inter.followup.send("❌ Failed to create announcement", ephemeral=True)
-                            return
-                        
-                        new_announcement = {
-                            'id': ann_id, 'server_id': self.guild_id, 'channel_id': self.channel.id,
-                            'message': self.message, 'frequency': freq_value,
-                            'next_run': db.get_next_run_time(freq_value), 'created_by': self.user_id, 'is_active': True
-                        }
-                        self.parent_cog.cached_announcements.append(new_announcement)
+        embed = discord.Embed(
+            title="📢 Select Announcement Frequency",
+            description=f"**Server:** {interaction.guild.name}\n**Channel:** {channel.mention}\n**Message:** {message[:100]}...\n**Start Time:** {parsed_start.strftime('%Y-%m-%d %H:%M')}",
+            color=discord.Color.blue()
+        )
+        
+        view = self.FrequencyView(self, message, channel, interaction.guild.id, interaction.user.id, parsed_start)
+        await interaction.followup.send(embed=embed, view=view)
 
-                        try:
-                            await self.channel.send(self.message)
-                        except Exception: pass
-                        
-                        next_run = db.get_next_run_time(freq_value)
-                        next_run_display = next_run.strftime("%Y-%m-%d %H:%M") if next_run else "N/A"
-                        freq_display = self.parent_cog.get_frequency_display(freq_value)
-                        
-                        success_embed = discord.Embed(
-                            title="✅ Announcement Created",
-                            description=f"**ID:** `{ann_id}`\n**Channel:** {self.channel.mention}\n**Frequency:** {freq_display}\n**Next Send:** {next_run_display}",
-                            color=discord.Color.green()
-                        )
-                        success_embed.add_field(name="Message Preview", value=self.message[:200], inline=False)
-                        await inter.followup.send(embed=success_embed)
-                    except Exception as e:
-                        try: await inter.followup.send(f"❌ Error: {str(e)[:100]}", ephemeral=True)
-                        except: pass
-            
-            class FrequencyView(discord.ui.View):
-                def __init__(self, parent_cog, msg, ch, guild_id, user_id):
-                    super().__init__(timeout=300)
-                    self.add_item(FrequencySelect(parent_cog, msg, ch, guild_id, user_id))
-            
-            view = FrequencyView(self, message, channel, interaction.guild.id, interaction.user.id)
-            await interaction.followup.send(embed=embed, view=view)
-        except Exception as e:
-            try: await interaction.followup.send(f"❌ Error: {str(e)[:100]}")
-            except: pass
-
-    @announce_group.command(name="edit", description="Edit an existing announcement")
+    @announce_group.command(name="edit", description="Edit an announcement (All fields required to update schedule)")
     @app_commands.describe(
         announcement_id="ID of the announcement to edit",
-        message="New message (optional)",
-        frequency="New frequency (optional)",
-        channel="New channel (optional)"
+        message="New message",
+        channel="New channel",
+        start_time="New start/next run time (HH:MM or YYYY-MM-DD HH:MM)"
     )
-    @app_commands.choices(frequency=[
-        app_commands.Choice(name="Every 1 Minute", value="1min"),
-        app_commands.Choice(name="Every 3 Minutes", value="3min"),
-        app_commands.Choice(name="Every 5 Minutes", value="5min"),
-        app_commands.Choice(name="Every 10 Minutes", value="10min"),
-        app_commands.Choice(name="Every 15 Minutes", value="15min"),
-        app_commands.Choice(name="Every 30 Minutes", value="30min"),
-        app_commands.Choice(name="Every 1 Hour", value="1hr"),
-        app_commands.Choice(name="Every 3 Hours", value="3hrs"),
-        app_commands.Choice(name="Every 6 Hours", value="6hrs"),
-        app_commands.Choice(name="Every 12 Hours", value="12hrs"),
-        app_commands.Choice(name="Every 1 Day", value="1day"),
-        app_commands.Choice(name="Every 3 Days", value="3days"),
-        app_commands.Choice(name="Every 1 Week", value="1week"),
-        app_commands.Choice(name="Every 2 Weeks", value="2weeks"),
-        app_commands.Choice(name="Every 1 Month", value="1month"),
-    ])
     async def announce_edit(
         self, 
         interaction: discord.Interaction, 
         announcement_id: int, 
-        message: Optional[str] = None, 
-        frequency: Optional[str] = None, 
-        channel: Optional[discord.TextChannel] = None
+        message: str, 
+        channel: discord.TextChannel,
+        start_time: str
     ):
-        """Edit an existing announcement's details."""
+        """Edit an existing announcement (Similar flow to Create)."""
         await interaction.response.defer(ephemeral=True)
 
-        # 1. Check if ANY edit is requested
-        if not message and not frequency and not channel:
-            await interaction.followup.send("⚠️ No changes provided. Please specify a message, frequency, or channel to update.")
-            return
-
-        # 2. Check existence in DB
+        # 1. Check existence
         announcement = await db.get_announcement(announcement_id, interaction.guild.id)
         if not announcement:
             await interaction.followup.send(f"❌ Announcement `{announcement_id}` not found in this server.")
             return
 
-        # 3. Check permissions if channel is changing
-        if channel and not channel.permissions_for(interaction.user).send_messages:
+        # 2. Check permissions
+        if not channel.permissions_for(interaction.user).send_messages:
             await interaction.followup.send("❌ You don't have permission to send messages in the new channel.")
             return
 
-        updates = {}
-        description_lines = []
+        # 3. Parse Time
+        parsed_start = self.parse_time_input(start_time)
+        if not parsed_start:
+            await interaction.followup.send("❌ Invalid time format. Use `HH:MM` or `YYYY-MM-DD HH:MM`", ephemeral=True)
+            return
 
-        if message:
-            updates['message'] = message
-            description_lines.append("📝 **Message:** Updated")
+        # 4. Trigger UI for Frequency Selection (Same as Create)
+        embed = discord.Embed(
+            title="✏️ Update Frequency",
+            description=f"**Editing ID:** `{announcement_id}`\n**New Channel:** {channel.mention}\n**New Start:** {parsed_start.strftime('%Y-%m-%d %H:%M')}\n\nPlease select the new frequency to complete the edit.",
+            color=discord.Color.gold()
+        )
         
-        if channel:
-            updates['channel_id'] = channel.id
-            description_lines.append(f"📺 **Channel:** {channel.mention}")
-
-        if frequency:
-            updates['frequency'] = frequency
-            # Recalculate next run based on new frequency immediately
-            new_next_run = db.get_next_run_time(frequency)
-            updates['next_run'] = new_next_run.isoformat() if new_next_run else None
-            description_lines.append(f"⏱️ **Frequency:** {self.get_frequency_display(frequency)}")
-            description_lines.append(f"⏭️ **Next Run:** {new_next_run.strftime('%Y-%m-%d %H:%M') if new_next_run else 'N/A'}")
-
-        # 4. Perform Update
-        success = await db.update_announcement_details(announcement_id, interaction.guild.id, updates)
-
-        if success:
-            # 5. Update Local Cache
-            # Find and update the item in the cache list
-            for i, ann in enumerate(self.cached_announcements):
-                if ann['id'] == announcement_id:
-                    # Update only the keys that changed
-                    for key, val in updates.items():
-                        # Handle specific conversions for cache
-                        if key == 'next_run' and val:
-                             self.cached_announcements[i][key] = datetime.fromisoformat(val)
-                        else:
-                             self.cached_announcements[i][key] = val
-                    break
-            
-            # If the item wasn't in cache (e.g. freshly rebooted), we might want to fetch it or just rely on next sync
-            # Since update_announcement_details affects DB, the next sync loop will pick it up anyway if cache is empty.
-
-            embed = discord.Embed(
-                title="✅ Announcement Updated",
-                description="\n".join(description_lines),
-                color=discord.Color.green()
-            )
-            embed.set_footer(text=f"ID: {announcement_id}")
-            await interaction.followup.send(embed=embed)
-        else:
-            await interaction.followup.send("❌ Failed to update the announcement in the database.")
+        # Pass edit_id to trigger edit mode in the callback
+        view = self.FrequencyView(self, message, channel, interaction.guild.id, interaction.user.id, parsed_start, edit_id=announcement_id)
+        await interaction.followup.send(embed=embed, view=view)
 
     @announce_group.command(name="list", description="List all announcements")
     async def announce_list(self, interaction: discord.Interaction):
         """List all active announcements for this server."""
         await interaction.response.defer(ephemeral=True)
         try:
+            # We assume get_announcements_by_server now returns a field 'is_active' or similar status
+            # If the DB function filters by active=True, we might need to adjust it to show all if desired.
+            # But based on the prompt "show disabled and enabled", let's assume we fetch ALL.
+            # For now, I'll stick to the existing DB call but add visual indicators if the DB supports status.
+            # If the DB call filters out inactive ones, this will only show active ones.
+            # To show both, we'd need to modify `db.get_announcements_by_server` to not filter by `is_active`.
+            # Assuming for now we just want to list what we get back with status:
+            
+            # NOTE: Ideally, update db.py to return is_active field if not already present in the dict
             announcements = await db.get_announcements_by_server(interaction.guild.id)
+            
             if not announcements:
-                await interaction.followup.send("❌ No announcements scheduled")
+                await interaction.followup.send("❌ No announcements found.")
                 return
             
             embed = discord.Embed(
-                title="📢 Active Announcements",
+                title="📢 Server Announcements",
                 description=f"Server: {interaction.guild.name}\nTotal: {len(announcements)}",
                 color=discord.Color.blue()
             )
+            
             for ann in announcements:
                 channel = self.bot.get_channel(ann['channel_id'])
                 channel_name = channel.mention if channel else f"(Unknown #{ann['channel_id']})"
-                next_run_display = ann['next_run'].strftime("%m-%d %H:%M") if ann['next_run'] else "N/A"
+                
+                # Check status if available, default to Active if key missing (since existing query likely filters active)
+                # If we modify the DB query later to include inactive, this logic will handle it.
+                is_active = ann.get('is_active', 1) # Default to 1 (True) if not returned
+                status_emoji = "🟢" if is_active else "🔴"
+                status_text = "Active" if is_active else "Disabled"
+                
+                next_run_display = ann['next_run'].strftime("%m-%d %H:%M") if ann.get('next_run') else "N/A"
                 freq_display = self.get_frequency_display(ann['frequency'])
-                msg_preview = ann['message'][:75] + ("..." if len(ann['message']) > 75 else "")
-                field_value = f"**Channel:** {channel_name}\n**Frequency:** {freq_display}\n**Next:** {next_run_display}\n**Msg:** {msg_preview}"
+                msg_preview = ann['message'][:50] + ("..." if len(ann['message']) > 50 else "")
+                
+                field_value = (
+                    f"**Status:** {status_emoji} {status_text}\n"
+                    f"**Channel:** {channel_name}\n"
+                    f"**Frequency:** {freq_display}\n"
+                    f"**Next:** {next_run_display}\n"
+                    f"**Msg:** {msg_preview}"
+                )
                 embed.add_field(name=f"ID: {ann['id']}", value=field_value, inline=False)
+                
             await interaction.followup.send(embed=embed)
         except Exception as e:
             try: await interaction.followup.send(f"❌ Error: {str(e)[:100]}")
             except: pass
     
-    @announce_group.command(name="stop", description="Stop an announcement")
+    @announce_group.command(name="stop", description="Stop an announcement (Inactive)")
     @app_commands.describe(announcement_id="ID of announcement to stop")
     async def announce_stop(self, interaction: discord.Interaction, announcement_id: int):
         """Stop a specific announcement."""
@@ -354,9 +404,36 @@ class Announcer(commands.Cog):
             embed = discord.Embed(
                 title="✅ Announcement Stopped",
                 description=f"**ID:** `{announcement_id}`\n**Message:** {announcement['message'][:200]}...",
-                color=discord.Color.green()
+                color=discord.Color.orange()
             )
             await interaction.followup.send(embed=embed)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Error: {str(e)[:100]}")
+
+    @announce_group.command(name="delete", description="Permanently delete an announcement")
+    @app_commands.describe(announcement_id="ID of announcement to delete")
+    async def announce_delete(self, interaction: discord.Interaction, announcement_id: int):
+        """Permanently delete an announcement from the database."""
+        await interaction.response.defer(ephemeral=True)
+        try:
+            # Check existence first
+            announcement = await db.get_announcement(announcement_id, interaction.guild.id)
+            if not announcement:
+                await interaction.followup.send(f"❌ Announcement `{announcement_id}` not found in this server")
+                return
+            
+            success = await db.delete_announcement(announcement_id, interaction.guild.id)
+            if success:
+                # Remove from cache
+                self.cached_announcements = [ann for ann in self.cached_announcements if ann['id'] != announcement_id]
+                embed = discord.Embed(
+                    title="🗑️ Announcement Deleted",
+                    description=f"**ID:** `{announcement_id}` has been permanently removed.",
+                    color=discord.Color.red()
+                )
+                await interaction.followup.send(embed=embed)
+            else:
+                await interaction.followup.send("❌ Failed to delete announcement from database.")
         except Exception as e:
             await interaction.followup.send(f"❌ Error: {str(e)[:100]}")
     

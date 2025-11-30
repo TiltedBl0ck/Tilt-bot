@@ -219,8 +219,21 @@ def get_next_run_time(frequency: str) -> datetime:
     delta = freq_map.get(frequency)
     return now + delta if delta else None
 
-async def create_announcement(server_id: int, channel_id: int, message: str, frequency: str, created_by: int) -> Optional[int]:
-    next_run = get_next_run_time(frequency)
+async def create_announcement(
+    server_id: int, 
+    channel_id: int, 
+    message: str, 
+    frequency: str, 
+    created_by: int,
+    manual_next_run: Optional[datetime] = None
+) -> Optional[int]:
+    """Create a new announcement with optional manual start time."""
+    
+    if manual_next_run:
+        next_run = manual_next_run
+    else:
+        next_run = get_next_run_time(frequency)
+        
     if not next_run: return None
     
     next_run_str = next_run.isoformat()
@@ -327,6 +340,19 @@ async def stop_announcement(ann_id: int, server_id: int) -> bool:
         return True
     except Exception as e:
         logger.error(f"Failed to stop announcement: {e}")
+        return False
+
+async def delete_announcement(ann_id: int, server_id: int) -> bool:
+    """Permanently delete an announcement."""
+    try:
+        await _db_connection.execute(
+            "DELETE FROM announcements WHERE id = ? AND server_id = ?",
+            (ann_id, server_id)
+        )
+        await _db_connection.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Failed to delete announcement: {e}")
         return False
 
 async def get_announcement(ann_id: int, server_id: int) -> Optional[Dict[str, Any]]:
