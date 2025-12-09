@@ -30,17 +30,20 @@ class Gemini(commands.Cog):
         self.conversation_history = defaultdict(list)
         self.max_history = 15
         
-        # CORRECTED: Use actual available model names (not -exp or -8b variants)
-        self.model_list = [
-            "gemini-2.0-flash",      # Latest stable, fastest, best for free tier
-            "gemini-1.5-flash",      # Stable, fast, high quota
-            "gemini-1.5-pro",        # High intelligence, lower quota
-            "gemini-1.0-pro"         # Legacy fallback
+        # Updated preferred list based on December 2025 availability
+        self.raw_model_list = [
+            "gemini-2.5-flash",      # Latest efficient model (Free tier available)
+            "gemini-2.5-pro",        # High intelligence (Free tier available)
+            "gemini-2.0-flash",      # Stable predecessor
+            "gemini-3-pro-preview",  # Bleeding edge (High intelligence)
+            "gemini-2.5-flash-lite"  # Ultra-fast fallback
         ]
         
+        # This will be populated by the validator
+        self.model_list = self.raw_model_list
+        
         # Track which models are currently quota-limited
-        self.model_status = {model: "available" for model in self.model_list}
-        self.current_preferred_model = 0
+        self.model_status = {model: "unknown" for model in self.model_list}
         
         # Safety settings (permissive for Discord bot context)
         self.safety_settings = [
@@ -49,6 +52,47 @@ class Gemini(commands.Cog):
             {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
         ]
+
+        # Run validation in background to not block bot startup
+        self.bot.loop.create_task(self.validate_available_models())
+
+    async def validate_available_models(self):
+        """
+        Dynamically checks which models are actually available in the current API version.
+        This prevents 404 errors by removing invalid models from rotation.
+        """
+        if not GEMINI_API_KEY:
+            return
+
+        logger.info("🔍 Validating available Gemini models...")
+        try:
+            # Run the sync list_models call in an executor
+            available_models = await asyncio.to_thread(self._fetch_models_sync)
+            
+            validated_list = []
+            for preferred in self.raw_model_list:
+                # Check if our preferred model exists in the available list
+                # The API returns names like "models/gemini-1.5-flash"
+                if any(m.name.endswith(preferred) for m in available_models):
+                    validated_list.append(preferred)
+                    self.model_status[preferred] = "available"
+                else:
+                    self.model_status[preferred] = "not_found"
+                    logger.debug(f"⚠️ Model '{preferred}' skipped (not found in current API).")
+
+            if validated_list:
+                self.model_list = validated_list
+                logger.info(f"✅ Gemini Model Rotation Set: {', '.join(self.model_list)}")
+            else:
+                logger.warning("❌ No preferred models found in API list! Using raw list as fallback.")
+                self.model_list = self.raw_model_list
+
+        except Exception as e:
+            logger.error(f"Failed to validate models: {e}")
+
+    def _fetch_models_sync(self):
+        """Helper to fetch models synchronously."""
+        return list(genai.list_models())
 
     def build_system_message(self, guild: discord.Guild = None) -> str:
         """Build system message from memory and server context."""
@@ -160,10 +204,9 @@ class Gemini(commands.Cog):
 
         # Try Gemini models in priority order
         attempted_models = []
-        for i, model_name in enumerate(self.model_list):
+        
+        for model_name in self.model_list:
             try:
-                logger.info(f"Trying Gemini model: {model_name}")
-                
                 # Initialize Model
                 model = genai.GenerativeModel(
                     model_name=model_name,
@@ -172,7 +215,10 @@ class Gemini(commands.Cog):
                 )
                 
                 # Start chat and generate
+                # Note: We create a fresh chat session for the history + new prompt
                 chat = model.start_chat(history=formatted_history)
+                
+                logger.debug(f"Sending request to {model_name}...")
                 response = await asyncio.get_event_loop().run_in_executor(
                     None,
                     lambda: chat.send_message(final_prompt)
@@ -185,7 +231,7 @@ class Gemini(commands.Cog):
 
             except google_exceptions.ResourceExhausted:
                 self.model_status[model_name] = "quota_exceeded"
-                logger.warning(f"⚠️ Quota exceeded for {model_name}. Trying next model...")
+                logger.warning(f"⚠️ Quota exceeded for {model_name}. Trying next...")
                 attempted_models.append(f"{model_name} (quota)")
                 continue
 
@@ -193,16 +239,17 @@ class Gemini(commands.Cog):
                 error_str = str(e).lower()
                 
                 # Handle model not found errors
-                if "404" in str(e) or "not found" in error_str or "not supported" in error_str:
-                    self.model_status[model_name] = "unavailable"
-                    logger.warning(f"⚠️ Model not available: {model_name}: {e}")
-                    attempted_models.append(f"{model_name} (not_available)")
+                if "404" in str(e) or "not found" in error_str:
+                    self.model_status[model_name] = "not_found"
+                    # Only log warning, not full error trace, to keep logs clean
+                    logger.warning(f"⚠️ Model not found/supported: {model_name}")
+                    attempted_models.append(f"{model_name} (404)")
                     continue
                 
-                # Handle generic 429 quota errors
-                if "429" in str(e) or "quota" in error_str or "rate" in error_str:
+                # Handle generic quota/rate errors
+                if "429" in str(e) or "quota" in error_str:
                     self.model_status[model_name] = "quota_exceeded"
-                    logger.warning(f"⚠️ Rate limited on {model_name}: {e}")
+                    logger.warning(f"⚠️ Rate limited on {model_name}")
                     attempted_models.append(f"{model_name} (rate_limit)")
                     continue
                 
@@ -210,7 +257,7 @@ class Gemini(commands.Cog):
                 if "503" in str(e) or "unavailable" in error_str:
                     self.model_status[model_name] = "unavailable"
                     logger.warning(f"⚠️ Service unavailable for {model_name}")
-                    attempted_models.append(f"{model_name} (unavailable)")
+                    attempted_models.append(f"{model_name} (503)")
                     continue
                 
                 logger.error(f"❌ Error with {model_name}: {e}")
@@ -219,7 +266,7 @@ class Gemini(commands.Cog):
                 continue
 
         # All Gemini models failed - try Perplexity fallback
-        logger.warning(f"❌ All Gemini models failed - attempting Perplexity fallback...")
+        logger.warning(f"❌ All Gemini models failed ({', '.join(attempted_models)}) - attempting Perplexity fallback...")
         perplexity_response = await self.get_perplexity_response(user_message)
         
         if perplexity_response:
@@ -227,9 +274,7 @@ class Gemini(commands.Cog):
             return f"🌐 **(Via Perplexity AI)**\n\n{perplexity_response}"
         else:
             # Both failed
-            status_report = "\n".join(attempted_models) if attempted_models else "All models failed"
-            logger.error(f"❌ All AI services failed (Gemini + Perplexity)")
-            return f"⚠️ **All AI services are currently unavailable.**\n\nGemini attempted:\n{status_report}\n\nPerplexity: Not available or no API key configured\n\nPlease try again in a few moments."
+            return f"⚠️ **All AI services are currently unavailable.**\n\nGemini Status: All models failed (Quota or 404)\nPerplexity Status: Failed or Not Configured\n\nPlease try again later."
 
     def update_history(self, channel_id: int, user_message: str, ai_response: str):
         """Update conversation history."""
@@ -250,7 +295,8 @@ class Gemini(commands.Cog):
         try:
             web_context = ""
             try:
-                if len(prompt) > 5:
+                # Trigger search only for slightly longer queries
+                if len(prompt) > 8:
                     logger.info(f"Searching for: {prompt}")
                     web_context = await get_latest_info(prompt)
             except Exception as e:
@@ -328,12 +374,22 @@ class Gemini(commands.Cog):
         """Check status of all Gemini models."""
         await interaction.response.defer(ephemeral=True)
         
-        status_msg = "🤖 **Gemini Model Status:**\n\n"
-        for i, model in enumerate(self.model_list, 1):
-            status = self.model_status.get(model, "unknown")
-            emoji = "✅" if status == "available" else "⚠️" if "quota" in status else "❌"
-            status_msg += f"{emoji} {i}. `{model}` - {status}\n"
+        status_msg = "🤖 **Gemini Model Status (Rotation):**\n\n"
         
+        # Display validated list first
+        if not self.model_list:
+             status_msg += "⚠️ No models found in rotation! (Check logs)\n"
+        
+        for model in self.model_list:
+            status = self.model_status.get(model, "unknown")
+            emoji = "✅" if status == "available" else "⚠️" if status == "quota_exceeded" else "❓"
+            status_msg += f"{emoji} `{model}`: {status}\n"
+
+        status_msg += f"\n**Checked Candidates:**\n"
+        for model in self.raw_model_list:
+             if model not in self.model_list:
+                 status_msg += f"❌ `{model}`: Not found/Invalid (Removed)\n"
+
         status_msg += f"\n🌐 **Perplexity Fallback:** {'✅ Configured' if PERPLEXITY_API_KEY else '❌ Not configured'}"
         await interaction.followup.send(status_msg)
 
