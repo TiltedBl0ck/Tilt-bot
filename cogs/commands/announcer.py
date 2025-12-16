@@ -403,14 +403,16 @@ class Announcer(commands.Cog):
                 
                 next_run_display = ann['next_run'].strftime("%m-%d %H:%M") if ann.get('next_run') else "N/A"
                 freq_display = self.get_frequency_display(ann['frequency'])
-                msg_preview = ann['message'][:50] + ("..." if len(ann['message']) > 50 else "")
+                
+                # Increase preview length to 250 characters and change label
+                msg_preview = ann['message'][:250] + ("..." if len(ann['message']) > 250 else "")
                 
                 field_value = (
                     f"**Status:** {status_emoji} {status_text}\n"
                     f"**Channel:** {channel_name}\n"
                     f"**Frequency:** {freq_display}\n"
                     f"**Next:** {next_run_display}\n"
-                    f"**Msg:** {msg_preview}"
+                    f"**Message:** {msg_preview}" # Changed from 'Msg:' to 'Message:'
                 )
                 embed.add_field(name=f"ID: {ann['id']}", value=field_value, inline=False)
                 
