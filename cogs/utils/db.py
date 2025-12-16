@@ -207,10 +207,15 @@ async def update_counting_stats(guild_id: int, current_count: int, last_counter_
         return False
 
 # --- Announcements Functions ---
-def get_next_run_time(frequency: str) -> datetime:
-    # FORCE UTC+8
-    now = datetime.now(UTC_PLUS_8)
+def get_next_run_time(frequency: str, anchor_dt: Optional[datetime] = None) -> Optional[datetime]:
+    """
+    Calculates the next run time for a given frequency. 
+    If an anchor_dt (the last scheduled run) is provided, it iteratively advances the schedule 
+    based on that anchor until the time is in the future (UTC+8), preventing schedule drift. 
+    Otherwise, it uses the current time (UTC+8) as the initial anchor.
     
+    Returns a naive datetime object representing the time in UTC+8.
+    """
     freq_map = {
         "1min": timedelta(minutes=1), "3min": timedelta(minutes=3),
         "5min": timedelta(minutes=5), "10min": timedelta(minutes=10),
@@ -222,9 +227,22 @@ def get_next_run_time(frequency: str) -> datetime:
         "1month": timedelta(days=30),
     }
     delta = freq_map.get(frequency)
-    # Return naive datetime for SQLite storage compatibility, but based on UTC+8 calculation
-    next_run = now + delta if delta else None
-    return next_run.replace(tzinfo=None) if next_run else None
+    if not delta: return None
+
+    # Get current time in UTC+8 and make it naive for consistent comparison with DB entries
+    now_naive_utc8 = datetime.now(UTC_PLUS_8).replace(tzinfo=None)
+    
+    # 1. Determine the starting point (anchor)
+    # If an anchor is provided (from the DB), we use that to maintain the exact schedule.
+    # Otherwise, use the current time as the anchor for initial creation.
+    next_run = anchor_dt if anchor_dt else now_naive_utc8
+
+    # 2. Iteratively advance the anchor until it is in the future (or present)
+    # This prevents drift by ensuring the time slot relative to the anchor is maintained.
+    while next_run <= now_naive_utc8:
+        next_run += delta
+        
+    return next_run
 
 async def create_announcement(
     server_id: int, 
@@ -237,10 +255,12 @@ async def create_announcement(
     """Create a new announcement with optional manual start time."""
     
     if manual_next_run:
-        # Ensure manual time is treated as naive for DB storage
+        # If manual time is provided, use it as the initial next_run, ensuring it's naive
         next_run = manual_next_run.replace(tzinfo=None)
     else:
-        next_run = get_next_run_time(frequency)
+        # Calculate the *first* run time that is in the future based on the current time
+        # The anchor is None here, so it uses now_naive_utc8 to calculate the first slot
+        next_run = get_next_run_time(frequency) 
         
     if not next_run: return None
     
@@ -271,6 +291,7 @@ async def get_announcements_by_server(server_id: int) -> List[Dict[str, Any]]:
             rows = await cursor.fetchall()
             results = []
             for row in rows:
+                # Convert stored string back to naive datetime object
                 next_run_dt = datetime.fromisoformat(row[3]) if row[3] else None
                 results.append({
                     'id': row[0], 'channel_id': row[1],
@@ -291,6 +312,7 @@ async def get_due_announcements() -> List[Dict[str, Any]]:
             rows = await cursor.fetchall()
             results = []
             for row in rows:
+                # Convert stored string back to naive datetime object
                 next_run_dt = datetime.fromisoformat(row[6]) if row[6] else None
                 results.append({
                     'id': row[0], 'server_id': row[1], 'channel_id': row[2],
@@ -302,25 +324,54 @@ async def get_due_announcements() -> List[Dict[str, Any]]:
         logger.error(f"Error fetching due announcements: {e}")
         return []
 
-async def update_announcement_next_run(ann_id: int, frequency: str) -> bool:
-    next_run = get_next_run_time(frequency)
-    if not next_run: return False
-    next_run_str = next_run.isoformat()
+async def update_announcement_next_run(ann_id: int, frequency: str) -> Optional[datetime]:
+    """
+    Updates the next_run time by iteratively advancing the previous next_run time
+    to the next scheduled slot in the future, maintaining the original schedule cycle.
     
+    Returns the new naive datetime object on success, None on failure.
+    """
     try:
+        # 1. Fetch the current next_run time (used as the anchor)
+        async with _db_connection.execute(
+            "SELECT next_run FROM announcements WHERE id = ?",
+            (ann_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if not row or not row[0]:
+                logger.warning(f"Announcement {ann_id} not found or next_run missing for update.")
+                return None
+            
+            # Convert the stored naive string back to a naive datetime object
+            last_scheduled_run = datetime.fromisoformat(row[0])
+
+        # 2. Calculate the *true* next run time using the last scheduled time as the anchor
+        # This fixes the schedule drift by preserving the original time slot.
+        new_next_run = get_next_run_time(frequency, anchor_dt=last_scheduled_run)
+        
+        if not new_next_run: return None
+        new_next_run_str = new_next_run.isoformat()
+        
+        # 3. Update the database
         await _db_connection.execute(
             "UPDATE announcements SET next_run = ? WHERE id = ?",
-            (next_run_str, ann_id)
+            (new_next_run_str, ann_id)
         )
         await _db_connection.commit()
-        return True
+        
+        return new_next_run
+        
     except Exception as e:
         logger.error(f"Failed to update announcement {ann_id}: {e}")
-        return False
+        return None
 
 async def update_announcement_details(ann_id: int, server_id: int, updates: Dict[str, Any]) -> bool:
     """Updates dynamic fields for an announcement."""
     if not updates: return False
+    
+    # Ensure next_run value is converted to ISO string before database update
+    if 'next_run' in updates and isinstance(updates['next_run'], datetime):
+        updates['next_run'] = updates['next_run'].isoformat()
     
     try:
         cols = list(updates.keys())

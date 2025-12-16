@@ -24,6 +24,7 @@ class Announcer(commands.Cog):
     def get_frequency_display(self, frequency: str) -> str:
         """Get human-readable frequency display."""
         freq_map = {
+            "once": "Once (Will not repeat)", # NEW: One-time announcement
             "1min": "Every 1 Minute",
             "3min": "Every 3 Minutes",
             "5min": "Every 5 Minutes",
@@ -107,7 +108,8 @@ class Announcer(commands.Cog):
                 except:
                     continue
             
-            if run_time and run_time <= now:
+            # Use a tiny buffer to account for loop timing and ensure we fire if the run time is now
+            if run_time and run_time <= now + timedelta(seconds=1): 
                 due_now.append(ann)
 
         for ann in due_now:
@@ -123,11 +125,26 @@ class Announcer(commands.Cog):
                         await channel.send(ann['message'])
                         logger.info(f"✅ Sent announcement {ann['id']}")
                         
-                        await db.update_announcement_next_run(ann['id'], ann['frequency'])
+                        # --- Logic for one-time announcements ---
+                        if ann['frequency'] == 'once':
+                            await db.mark_announcement_inactive(ann['id'])
+                            # Remove from local cache immediately
+                            if ann in self.cached_announcements:
+                                self.cached_announcements.remove(ann)
+                            logger.info(f"✅ One-time announcement {ann['id']} sent and marked inactive.")
+                            continue # Skip recurring update logic
+
+                        # Use the modified update function which returns the next run time
+                        next_run_dt = await db.update_announcement_next_run(ann['id'], ann['frequency'])
                         
-                        # Update Local Cache Next Run
-                        next_run_dt = db.get_next_run_time(ann['frequency'])
-                        ann['next_run'] = next_run_dt
+                        # Update Local Cache Next Run with the newly calculated, drift-corrected time
+                        if next_run_dt:
+                             ann['next_run'] = next_run_dt
+                        else:
+                            # If update failed, log and remove from cache to force re-sync later
+                             logger.error(f"Failed to calculate and update next_run for announcement {ann['id']}")
+                             if ann in self.cached_announcements:
+                                 self.cached_announcements.remove(ann)
                         
                     except Exception as e:
                         logger.error(f"Failed to send announcement {ann['id']}: {e}")
@@ -158,6 +175,7 @@ class Announcer(commands.Cog):
             self.edit_id = edit_id # If set, we are editing, not creating
             
             options = [
+                discord.SelectOption(label="Once (Do not repeat)", value="once", emoji="✅"), # NEW OPTION
                 discord.SelectOption(label="Every 1 Minute", value="1min", emoji="⏱️"),
                 discord.SelectOption(label="Every 3 Minutes", value="3min", emoji="⏱️"),
                 discord.SelectOption(label="Every 5 Minutes", value="5min", emoji="⏱️"),
@@ -190,7 +208,8 @@ class Announcer(commands.Cog):
                         'message': self.message,
                         'channel_id': self.channel.id,
                         'frequency': freq_value,
-                        'next_run': self.start_dt.isoformat()
+                        # self.start_dt is already set to the desired 'next_run' (drift-corrected anchor)
+                        'next_run': self.start_dt 
                     }
                     
                     success = await db.update_announcement_details(self.edit_id, self.guild_id, updates)
@@ -203,7 +222,7 @@ class Announcer(commands.Cog):
                                     'message': self.message,
                                     'channel_id': self.channel.id,
                                     'frequency': freq_value,
-                                    'next_run': self.start_dt
+                                    'next_run': self.start_dt # The new starting time
                                 })
                                 break
                                 
