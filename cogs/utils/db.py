@@ -80,13 +80,14 @@ async def init_db() -> bool:
                 );
             """)
 
-            # Create details table (NEW)
+            # Create details table (Updated for Announcements)
             await cursor.execute("""
                 CREATE TABLE IF NOT EXISTS details (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
-                    description TEXT,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    announcement_id INTEGER NOT NULL,
+                    info TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(announcement_id) REFERENCES announcements(id) ON DELETE CASCADE
                 );
             """)
             
@@ -194,7 +195,6 @@ async def create_announcement(
 ) -> Optional[int]:
     """
     Creates a new announcement. 
-    The 'tz_offset_hours' parameter is not used because we enforce UTC+8 internally.
     """
     if manual_next_run:
         next_run = manual_next_run.replace(tzinfo=None)
@@ -214,6 +214,19 @@ async def create_announcement(
     except Exception as e:
         logger.error(f"Failed to create announcement: {e}")
         return None
+
+async def create_detail(announcement_id: int, info: str) -> bool:
+    """Creates a detail record linked to an announcement."""
+    try:
+        await _db_connection.execute(
+            "INSERT INTO details (announcement_id, info) VALUES (?, ?)",
+            (announcement_id, info)
+        )
+        await _db_connection.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Failed to create detail: {e}")
+        return False
 
 async def get_due_announcements() -> List[Dict[str, Any]]:
     try:

@@ -96,13 +96,14 @@ class Announcer(commands.Cog):
     announce_group = app_commands.Group(name="announce", description="Announcement management")
     
     class FrequencySelect(discord.ui.Select):
-        def __init__(self, parent_cog, msg, ch, guild_id, user_id, start_dt, edit_id=None):
+        def __init__(self, parent_cog, msg, ch, guild_id, user_id, start_dt, details, edit_id=None):
             self.parent_cog = parent_cog
             self.message = msg
             self.channel = ch
             self.guild_id = guild_id
             self.user_id = user_id
             self.start_dt = start_dt
+            self.details = details
             self.edit_id = edit_id
             
             options = [
@@ -119,7 +120,7 @@ class Announcer(commands.Cog):
             await inter.response.defer(ephemeral=True)
             try:
                 # Helper to create detail embed
-                def create_detail_embed(title, ann_id, channel_id, frequency, next_run, message):
+                def create_detail_embed(title, ann_id, channel_id, frequency, next_run, message, details=None):
                     embed = discord.Embed(title=title, color=discord.Color.green())
                     embed.add_field(name="ID", value=str(ann_id), inline=True)
                     embed.add_field(name="Channel", value=f"<#{channel_id}>", inline=True)
@@ -128,12 +129,15 @@ class Announcer(commands.Cog):
                     # Show more of the message in the confirmation
                     msg_display = message[:1000] + ("..." if len(message) > 1000 else "")
                     embed.add_field(name="Message", value=msg_display, inline=False)
+                    if details:
+                        embed.add_field(name="Additional Details", value=details, inline=False)
                     return embed
 
                 if self.edit_id:
                     updates = {'message': self.message, 'channel_id': self.channel.id, 'frequency': freq, 'next_run': self.start_dt}
                     success = await db.update_announcement_details(self.edit_id, self.guild_id, updates)
                     if success:
+                        # Note: Editing details is not supported in this simplistic update, only creation.
                         embed = create_detail_embed(
                             "✅ Announcement Updated", 
                             self.edit_id, 
@@ -146,19 +150,23 @@ class Announcer(commands.Cog):
                     else:
                         await inter.followup.send("❌ DB update failed.")
                 else:
-                    # CORRECTED CALL: No tz_offset_hours passed here
                     ann_id = await db.create_announcement(
                         self.guild_id, self.channel.id, self.message, freq, self.user_id,
                         manual_next_run=self.start_dt
                     )
                     if ann_id:
+                        # If details were provided, save them to the new details table
+                        if self.details:
+                            await db.create_detail(ann_id, self.details)
+                        
                         embed = create_detail_embed(
                             "✅ Announcement Created", 
                             ann_id, 
                             self.channel.id, 
                             freq, 
                             self.start_dt, 
-                            self.message
+                            self.message,
+                            self.details
                         )
                         await inter.followup.send(embed=embed)
                     else:
@@ -167,18 +175,24 @@ class Announcer(commands.Cog):
                 await inter.followup.send(f"❌ Error: {str(e)[:100]}")
     
     class FrequencyView(discord.ui.View):
-        def __init__(self, parent_cog, msg, ch, guild_id, user_id, start_dt, edit_id=None):
+        def __init__(self, parent_cog, msg, ch, guild_id, user_id, start_dt, details=None, edit_id=None):
             super().__init__(timeout=180)
-            self.add_item(Announcer.FrequencySelect(parent_cog, msg, ch, guild_id, user_id, start_dt, edit_id))
+            self.add_item(Announcer.FrequencySelect(parent_cog, msg, ch, guild_id, user_id, start_dt, details, edit_id))
 
     @announce_group.command(name="create", description="Create an announcement")
-    async def announce_create(self, interaction: discord.Interaction, message: str, channel: discord.TextChannel, start_time: str):
+    @app_commands.describe(
+        message="The message to announce",
+        channel="Channel to send the announcement in",
+        start_time="Start time (HH:MM or YYYY-MM-DD HH:MM)",
+        details="Optional context or description for this announcement (saved to details table)"
+    )
+    async def announce_create(self, interaction: discord.Interaction, message: str, channel: discord.TextChannel, start_time: str, details: Optional[str] = None):
         parsed = self.parse_time_input(start_time)
         if not parsed:
             await interaction.response.send_message("❌ Invalid time format. Use HH:MM.", ephemeral=True)
             return
         
-        view = self.FrequencyView(self, message, channel, interaction.guild.id, interaction.user.id, parsed)
+        view = self.FrequencyView(self, message, channel, interaction.guild.id, interaction.user.id, parsed, details)
         await interaction.response.send_message("Please select a frequency:", view=view, ephemeral=True)
 
     @announce_group.command(name="list", description="List announcements")
