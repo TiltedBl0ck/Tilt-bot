@@ -136,15 +136,19 @@ class Announcer(commands.Cog):
                 if self.edit_id:
                     updates = {'message': self.message, 'channel_id': self.channel.id, 'frequency': freq, 'next_run': self.start_dt}
                     success = await db.update_announcement_details(self.edit_id, self.guild_id, updates)
+                    
                     if success:
-                        # Note: Editing details is not supported in this simplistic update, only creation.
+                        if self.details is not None:
+                             await db.update_detail(self.edit_id, self.details)
+
                         embed = create_detail_embed(
                             "✅ Announcement Updated", 
                             self.edit_id, 
                             self.channel.id, 
                             freq, 
                             self.start_dt, 
-                            self.message
+                            self.message,
+                            self.details
                         )
                         await inter.followup.send(embed=embed)
                     else:
@@ -194,6 +198,46 @@ class Announcer(commands.Cog):
         
         view = self.FrequencyView(self, message, channel, interaction.guild.id, interaction.user.id, parsed, details)
         await interaction.response.send_message("Please select a frequency:", view=view, ephemeral=True)
+
+    @announce_group.command(name="edit", description="Edit an existing announcement")
+    @app_commands.describe(
+        announcement_id="The ID of the announcement to edit",
+        message="New message (leave empty to keep current)",
+        channel="New channel (leave empty to keep current)",
+        start_time="New start time (leave empty to keep current)",
+        details="New details (leave empty to keep current)"
+    )
+    async def announce_edit(self, interaction: discord.Interaction, announcement_id: int, message: Optional[str] = None, channel: Optional[discord.TextChannel] = None, start_time: Optional[str] = None, details: Optional[str] = None):
+        # Fetch current
+        current = await db.get_announcement(announcement_id, interaction.guild.id)
+        if not current:
+            await interaction.response.send_message("❌ Announcement not found.", ephemeral=True)
+            return
+
+        # Prepare new values
+        new_msg = message if message else current['message']
+        new_channel_id = channel.id if channel else current['channel_id']
+        new_channel = interaction.guild.get_channel(new_channel_id)
+        if not new_channel: 
+             await interaction.response.send_message("❌ Channel not found.", ephemeral=True)
+             return
+
+        # Time
+        if start_time:
+             new_start = self.parse_time_input(start_time)
+             if not new_start:
+                  await interaction.response.send_message("❌ Invalid time format.", ephemeral=True)
+                  return
+        else:
+             new_start = current['next_run']
+
+        # Details
+        current_details = await db.get_detail(announcement_id)
+        new_details = details if details is not None else current_details
+
+        # Launch View
+        view = self.FrequencyView(self, new_msg, new_channel, interaction.guild.id, interaction.user.id, new_start, new_details, edit_id=announcement_id)
+        await interaction.response.send_message(f"Editing Announcement {announcement_id}. Please confirm/update frequency:", view=view, ephemeral=True)
 
     @announce_group.command(name="list", description="List announcements")
     async def announce_list(self, interaction: discord.Interaction):

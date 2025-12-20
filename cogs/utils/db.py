@@ -120,11 +120,6 @@ async def get_db_connection():
 # --- Config Helpers ---
 async def invalidate_config_cache(guild_id: int):
     async with _cache_lock:
-        _config_cache.pop(guild_id, None)
-        _cache_timestamps.pop(guild_id, None)
-
-async def get_guild_config(guild_id: int) -> Optional[Dict[str, Any]]:
-    async with _cache_lock:
         import time
         if guild_id in _config_cache:
              if (time.time() - _cache_timestamps.get(guild_id, 0)) < _cache_ttl:
@@ -169,6 +164,7 @@ async def set_guild_config_value(guild_id: int, updates: Dict[str, Any]) -> bool
 def get_next_run_time(frequency: str, anchor_dt: Optional[datetime] = None) -> Optional[datetime]:
     """Calculates next run time, maintaining schedule drift correction."""
     freq_map = {
+        "once": timedelta(seconds=0), # Special case
         "1min": timedelta(minutes=1), "3min": timedelta(minutes=3), "5min": timedelta(minutes=5),
         "10min": timedelta(minutes=10), "15min": timedelta(minutes=15), "30min": timedelta(minutes=30),
         "1hr": timedelta(hours=1), "3hrs": timedelta(hours=3), "6hrs": timedelta(hours=6),
@@ -176,7 +172,8 @@ def get_next_run_time(frequency: str, anchor_dt: Optional[datetime] = None) -> O
         "1week": timedelta(weeks=1), "2weeks": timedelta(weeks=2), "1month": timedelta(days=30),
     }
     delta = freq_map.get(frequency)
-    if not delta: return None
+    if delta is None: return None
+    if frequency == "once": return anchor_dt # Or None? Logic handled elsewhere usually
 
     now_naive = datetime.now(UTC_PLUS_8).replace(tzinfo=None)
     next_run = anchor_dt if anchor_dt else now_naive
@@ -226,6 +223,31 @@ async def create_detail(announcement_id: int, info: str) -> bool:
         return True
     except Exception as e:
         logger.error(f"Failed to create detail: {e}")
+        return False
+
+async def get_detail(announcement_id: int) -> Optional[str]:
+    """Fetches the detail info for a given announcement."""
+    try:
+        async with _db_connection.execute("SELECT info FROM details WHERE announcement_id = ?", (announcement_id,)) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else None
+    except Exception as e:
+        logger.error(f"Failed to get detail: {e}")
+        return None
+
+async def update_detail(announcement_id: int, info: str) -> bool:
+    """Updates or inserts the detail record for an announcement."""
+    try:
+        # Check if exists
+        exists = await get_detail(announcement_id)
+        if exists is not None:
+            await _db_connection.execute("UPDATE details SET info = ? WHERE announcement_id = ?", (info, announcement_id))
+        else:
+            await _db_connection.execute("INSERT INTO details (announcement_id, info) VALUES (?, ?)", (announcement_id, info))
+        await _db_connection.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Failed to update detail: {e}")
         return False
 
 async def get_due_announcements() -> List[Dict[str, Any]]:
