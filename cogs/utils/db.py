@@ -22,7 +22,8 @@ _cache_ttl = 3600
 _cache_timestamps: Dict[int, float] = {}
 
 # --- Timezone Setup ---
-UTC_PLUS_8 = timezone(timedelta(hours=8))
+# Default to UTC (0 hours offset) if not specified by the calling function.
+DEFAULT_TZ_OFFSET = 0 
 
 # --- Database Initialization ---
 async def init_db() -> bool:
@@ -207,14 +208,14 @@ async def update_counting_stats(guild_id: int, current_count: int, last_counter_
         return False
 
 # --- Announcements Functions ---
-def get_next_run_time(frequency: str, anchor_dt: Optional[datetime] = None) -> Optional[datetime]:
+def get_next_run_time(frequency: str, anchor_dt: Optional[datetime] = None, tz_offset_hours: int = DEFAULT_TZ_OFFSET) -> Optional[datetime]:
     """
-    Calculates the next run time for a given frequency. 
+    Calculates the next run time for a given frequency, based on a specific UTC offset. 
     If an anchor_dt (the last scheduled run) is provided, it iteratively advances the schedule 
-    based on that anchor until the time is in the future (UTC+8), preventing schedule drift. 
-    Otherwise, it uses the current time (UTC+8) as the initial anchor.
+    based on that anchor until the time is in the future (in the specified TZ), preventing schedule drift. 
+    Otherwise, it uses the current time in the specified TZ as the initial anchor.
     
-    Returns a naive datetime object representing the time in UTC+8.
+    Returns a naive datetime object representing the time in that timezone.
     """
     freq_map = {
         "1min": timedelta(minutes=1), "3min": timedelta(minutes=3),
@@ -229,17 +230,20 @@ def get_next_run_time(frequency: str, anchor_dt: Optional[datetime] = None) -> O
     delta = freq_map.get(frequency)
     if not delta: return None
 
-    # Get current time in UTC+8 and make it naive for consistent comparison with DB entries
-    now_naive_utc8 = datetime.now(UTC_PLUS_8).replace(tzinfo=None)
+    # Create the target timezone object
+    target_tz = timezone(timedelta(hours=tz_offset_hours))
+
+    # Get current time in the target timezone and make it naive for consistent comparison with DB entries
+    now_naive_target_tz = datetime.now(target_tz).replace(tzinfo=None)
     
     # 1. Determine the starting point (anchor)
     # If an anchor is provided (from the DB), we use that to maintain the exact schedule.
     # Otherwise, use the current time as the anchor for initial creation.
-    next_run = anchor_dt if anchor_dt else now_naive_utc8
+    next_run = anchor_dt if anchor_dt else now_naive_target_tz
 
     # 2. Iteratively advance the anchor until it is in the future (or present)
     # This prevents drift by ensuring the time slot relative to the anchor is maintained.
-    while next_run <= now_naive_utc8:
+    while next_run <= now_naive_target_tz:
         next_run += delta
         
     return next_run
@@ -254,12 +258,15 @@ async def create_announcement(
 ) -> Optional[int]:
     """Create a new announcement with optional manual start time."""
     
+    # NOTE: This function assumes the manual_next_run received from the caller 
+    # (i.e., announcer.py) is already localized to the desired TZ and is passed as a naive datetime.
+    
     if manual_next_run:
         # If manual time is provided, use it as the initial next_run, ensuring it's naive
         next_run = manual_next_run.replace(tzinfo=None)
     else:
-        # Calculate the *first* run time that is in the future based on the current time
-        # The anchor is None here, so it uses now_naive_utc8 to calculate the first slot
+        # Calculate the *first* run time that is in the future based on the current time (Default TZ)
+        # The anchor is None here, so it uses now_naive_utc to calculate the first slot
         next_run = get_next_run_time(frequency) 
         
     if not next_run: return None
@@ -324,7 +331,7 @@ async def get_due_announcements() -> List[Dict[str, Any]]:
         logger.error(f"Error fetching due announcements: {e}")
         return []
 
-async def update_announcement_next_run(ann_id: int, frequency: str) -> Optional[datetime]:
+async def update_announcement_next_run(ann_id: int, frequency: str, tz_offset_hours: int = DEFAULT_TZ_OFFSET) -> Optional[datetime]:
     """
     Updates the next_run time by iteratively advancing the previous next_run time
     to the next scheduled slot in the future, maintaining the original schedule cycle.
@@ -347,7 +354,8 @@ async def update_announcement_next_run(ann_id: int, frequency: str) -> Optional[
 
         # 2. Calculate the *true* next run time using the last scheduled time as the anchor
         # This fixes the schedule drift by preserving the original time slot.
-        new_next_run = get_next_run_time(frequency, anchor_dt=last_scheduled_run)
+        # Pass the offset to ensure calculations respect the intended TZ.
+        new_next_run = get_next_run_time(frequency, anchor_dt=last_scheduled_run, tz_offset_hours=tz_offset_hours)
         
         if not new_next_run: return None
         new_next_run_str = new_next_run.isoformat()

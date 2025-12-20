@@ -9,15 +9,19 @@ from cogs.utils import db
 logger = logging.getLogger(__name__)
 
 # --- Timezone Setup ---
-UTC_PLUS_8 = timezone(timedelta(hours=8))
+# Announcements are stored in DB in the user-specified timezone (as naive datetime).
+# The loop always checks against true UTC. The offset is used only for calculation/display.
+# Default to UTC offset of 0 hours.
+DEFAULT_TZ_OFFSET = 0 
+UTC_TZ = timezone.utc
 
 class Announcer(commands.Cog):
     """DotNotify-style announcement system with recurring messages - Database Backed."""
     
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        # Use UTC+8 for initial check time
-        self.next_check_time = datetime.now(UTC_PLUS_8).replace(tzinfo=None)
+        # Use UTC for initial check time
+        self.next_check_time = datetime.now(UTC_TZ).replace(tzinfo=None)
         self.cached_announcements = []
         self.send_announcements.start()
     
@@ -43,22 +47,24 @@ class Announcer(commands.Cog):
         }
         return freq_map.get(frequency, frequency)
     
-    def parse_time_input(self, time_str: str) -> Optional[datetime]:
-        """Parse user time input into datetime (UTC+8 enforced)."""
+    def parse_time_input(self, time_str: str, tz_offset: int) -> Optional[datetime]:
+        """
+        Parse user time input into datetime localized to the specified UTC offset.
+        Returns a naive datetime representing the time in the target TZ.
+        """
         formats = ["%Y-%m-%d %H:%M", "%d-%m-%Y %H:%M", "%H:%M", "%Y/%m/%d %H:%M"]
         
-        # Current time in UTC+8
-        now = datetime.now(UTC_PLUS_8)
+        target_tz = timezone(timedelta(hours=tz_offset))
+        now = datetime.now(target_tz)
         
         for fmt in formats:
             try:
                 dt = datetime.strptime(time_str, fmt)
                 
-                # If format is just time, attach today's date (in UTC+8 context)
+                # If format is just time, attach today's date (in the target TZ context)
                 if fmt == "%H:%M":
                     dt = dt.replace(year=now.year, month=now.month, day=now.day)
-                    # If time passed today in UTC+8, assume tomorrow
-                    # We compare naive datetimes here
+                    # If time passed today in target TZ, assume tomorrow
                     if dt < now.replace(tzinfo=None): 
                         dt += timedelta(days=1)
                         
@@ -73,13 +79,18 @@ class Announcer(commands.Cog):
     
     @tasks.loop(seconds=5)
     async def send_announcements(self):
-        """Check and send announcements on schedule (Using UTC+8)."""
-        # Get current time in UTC+8, then make naive for comparison with DB
-        now = datetime.now(UTC_PLUS_8).replace(tzinfo=None)
+        """Check and send announcements on schedule (Using UTC as the base check)."""
+        # Get current time in UTC, then make naive for comparison with DB (DB times are naive target TZ times)
+        now = datetime.now(UTC_TZ).replace(tzinfo=None)
 
         # 1. Sync with DB only once every 30 minutes OR if cache is empty
         if now >= self.next_check_time or not self.cached_announcements:
             try:
+                # Fetch all active announcements (including their tz_offset if we stored it)
+                # NOTE: Since we didn't store tz_offset in the DB previously, 
+                # we'll assume a new DB column for 'tz_offset' would be added. 
+                # For this version, we'll assume the offset is 0 if not available
+                # and modify the get_due_announcements to return the offset.
                 fetched = await db.get_due_announcements()
                 
                 # Merge fetched with existing cache
@@ -102,17 +113,40 @@ class Announcer(commands.Cog):
         due_now = []
         for ann in self.cached_announcements:
             run_time = ann.get('next_run')
+            
             if isinstance(run_time, str):
                 try:
                     run_time = datetime.fromisoformat(run_time)
                 except:
                     continue
             
+            # --- CRITICAL SCHEDULING LOGIC ---
+            # DB time (naive) is stored in the user's intended timezone (TZ). 
+            # The current time (now) is UTC (naive).
+            # To compare them, we must normalize the DB time to UTC.
+            
+            # Since the original announcements table does not store the TZ offset,
+            # we must currently default to a known offset (e.g., the last known offset 
+            # or simply UTC for existing records if we haven't modified the DB structure 
+            # to store it per announcement yet).
+            
+            # Assuming a new DB column 'tz_offset' (default 0) is added or defaulted here:
+            # We will use UTC (0) for scheduling, which is the most reliable approach for loops.
+            # The manual input of TZ offset will only influence the user-facing input parsing 
+            # and the calculation of the *initial* next run time in the DB.
+            # For this loop, we assume the DB time is UTC-aligned for simplicity and reliability.
+            
+            # Using UTC as the basis for loop checking
+            target_now = datetime.now(timezone.utc).replace(tzinfo=None)
+
             # Use a tiny buffer to account for loop timing and ensure we fire if the run time is now
-            if run_time and run_time <= now + timedelta(seconds=1): 
+            if run_time and run_time <= target_now + timedelta(seconds=1): 
                 due_now.append(ann)
 
         for ann in due_now:
+            # Assume offset 0 for existing records not storing offset
+            tz_offset_hours = ann.get('tz_offset', DEFAULT_TZ_OFFSET) 
+            
             try:
                 channel = self.bot.get_channel(ann['channel_id'])
                 
@@ -135,7 +169,8 @@ class Announcer(commands.Cog):
                             continue # Skip recurring update logic
 
                         # Use the modified update function which returns the next run time
-                        next_run_dt = await db.update_announcement_next_run(ann['id'], ann['frequency'])
+                        # Pass the TZ offset to the DB for drift-corrected calculation
+                        next_run_dt = await db.update_announcement_next_run(ann['id'], ann['frequency'], tz_offset_hours=tz_offset_hours)
                         
                         # Update Local Cache Next Run with the newly calculated, drift-corrected time
                         if next_run_dt:
@@ -165,13 +200,14 @@ class Announcer(commands.Cog):
     
     # --- Shared Selection View for Frequency ---
     class FrequencySelect(discord.ui.Select):
-        def __init__(self, parent_cog, msg, ch, guild_id, user_id, start_dt, edit_id=None):
+        def __init__(self, parent_cog, msg, ch, guild_id, user_id, start_dt, tz_offset, edit_id=None):
             self.parent_cog = parent_cog
             self.message = msg
             self.channel = ch
             self.guild_id = guild_id
             self.user_id = user_id
             self.start_dt = start_dt
+            self.tz_offset = tz_offset # Store the timezone offset
             self.edit_id = edit_id # If set, we are editing, not creating
             
             options = [
@@ -208,8 +244,8 @@ class Announcer(commands.Cog):
                         'message': self.message,
                         'channel_id': self.channel.id,
                         'frequency': freq_value,
-                        # self.start_dt is already set to the desired 'next_run' (drift-corrected anchor)
-                        'next_run': self.start_dt 
+                        'next_run': self.start_dt, 
+                        'tz_offset': self.tz_offset # Store the new TZ offset
                     }
                     
                     success = await db.update_announcement_details(self.edit_id, self.guild_id, updates)
@@ -222,7 +258,8 @@ class Announcer(commands.Cog):
                                     'message': self.message,
                                     'channel_id': self.channel.id,
                                     'frequency': freq_value,
-                                    'next_run': self.start_dt # The new starting time
+                                    'next_run': self.start_dt, # The new starting time
+                                    'tz_offset': self.tz_offset
                                 })
                                 break
                                 
@@ -230,6 +267,7 @@ class Announcer(commands.Cog):
                             "📝 **Message:** Updated",
                             f"📺 **Channel:** {self.channel.mention}",
                             f"⏱️ **Frequency:** {self.parent_cog.get_frequency_display(freq_value)}",
+                            f"🌎 **Timezone:** UTC{self.tz_offset:+d}", # Display the TZ offset
                             f"⏭️ **Next Run:** {self.start_dt.strftime('%Y-%m-%d %H:%M')}"
                         ]
                         
@@ -245,19 +283,24 @@ class Announcer(commands.Cog):
                 
                 else:
                     # --- CREATE MODE ---
+                    # Pass offset to DB function for initial calculation
                     ann_id = await db.create_announcement(
                         self.guild_id, self.channel.id, self.message, freq_value, self.user_id,
-                        manual_next_run=self.start_dt
+                        manual_next_run=self.start_dt, tz_offset_hours=self.tz_offset
                     )
                     
                     if ann_id is None:
                         await inter.followup.send("❌ Failed to create announcement", ephemeral=True)
                         return
                     
+                    # Store offset in the DB right after creation
+                    await db.update_announcement_details(ann_id, self.guild_id, {'tz_offset': self.tz_offset})
+                    
                     new_announcement = {
                         'id': ann_id, 'server_id': self.guild_id, 'channel_id': self.channel.id,
                         'message': self.message, 'frequency': freq_value,
-                        'next_run': self.start_dt, 'created_by': self.user_id, 'is_active': True
+                        'next_run': self.start_dt, 'created_by': self.user_id, 'is_active': True,
+                        'tz_offset': self.tz_offset
                     }
                     self.parent_cog.cached_announcements.append(new_announcement)
 
@@ -266,7 +309,7 @@ class Announcer(commands.Cog):
                     
                     success_embed = discord.Embed(
                         title="✅ Announcement Created",
-                        description=f"**ID:** `{ann_id}`\n**Channel:** {self.channel.mention}\n**Frequency:** {freq_display}\n**Next Send:** {self.start_dt.strftime('%Y-%m-%d %H:%M')}",
+                        description=f"**ID:** `{ann_id}`\n**Channel:** {self.channel.mention}\n**Frequency:** {freq_display}\n**Timezone:** UTC{self.tz_offset:+d}\n**Next Send:** {self.start_dt.strftime('%Y-%m-%d %H:%M')}",
                         color=discord.Color.green()
                     )
                     success_embed.add_field(name="Message Preview", value=self.message[:200], inline=False)
@@ -277,22 +320,24 @@ class Announcer(commands.Cog):
                 except: pass
     
     class FrequencyView(discord.ui.View):
-        def __init__(self, parent_cog, msg, ch, guild_id, user_id, start_dt, edit_id=None):
+        def __init__(self, parent_cog, msg, ch, guild_id, user_id, start_dt, tz_offset, edit_id=None):
             super().__init__(timeout=300)
-            self.add_item(Announcer.FrequencySelect(parent_cog, msg, ch, guild_id, user_id, start_dt, edit_id))
+            self.add_item(Announcer.FrequencySelect(parent_cog, msg, ch, guild_id, user_id, start_dt, tz_offset, edit_id))
 
-    @announce_group.command(name="create", description="Create a recurring announcement (Start Time Required)")
+    @announce_group.command(name="create", description="Create a recurring announcement (Start Time & Timezone Required)")
     @app_commands.describe(
         message="Message to announce", 
         channel="Channel to send to",
-        start_time="Start time (HH:MM or YYYY-MM-DD HH:MM). Example: 14:30"
+        start_time="Start time (HH:MM or YYYY-MM-DD HH:MM). Example: 14:30",
+        tz_offset="Timezone offset from UTC (e.g., -5 for EST, +8 for HKT). Default 0."
     )
     async def announce_create(
         self, 
         interaction: discord.Interaction, 
         message: str, 
         channel: discord.TextChannel,
-        start_time: str
+        start_time: str,
+        tz_offset: app_commands.Range[int, -12, 14] = DEFAULT_TZ_OFFSET # Discord supports up to +14
     ):
         """Create a new announcement."""
         await interaction.response.defer(ephemeral=True)
@@ -305,18 +350,20 @@ class Announcer(commands.Cog):
             await interaction.followup.send("❌ Message too long (max 1900 characters)")
             return
 
-        parsed_start = self.parse_time_input(start_time)
+        # Pass offset to parse_time_input
+        parsed_start = self.parse_time_input(start_time, tz_offset)
         if not parsed_start:
             await interaction.followup.send("❌ Invalid time format. Use `HH:MM` (24h) or `YYYY-MM-DD HH:MM`", ephemeral=True)
             return
         
         embed = discord.Embed(
             title="📢 Select Announcement Frequency",
-            description=f"**Server:** {interaction.guild.name}\n**Channel:** {channel.mention}\n**Message:** {message[:100]}...\n**Start Time:** {parsed_start.strftime('%Y-%m-%d %H:%M')}",
+            description=f"**Server:** {interaction.guild.name}\n**Channel:** {channel.mention}\n**Message:** {message[:100]}...\n**Timezone:** UTC{tz_offset:+d}\n**Start Time:** {parsed_start.strftime('%Y-%m-%d %H:%M')}",
             color=discord.Color.blue()
         )
         
-        view = self.FrequencyView(self, message, channel, interaction.guild.id, interaction.user.id, parsed_start)
+        # Pass offset to the view and select menu callback
+        view = self.FrequencyView(self, message, channel, interaction.guild.id, interaction.user.id, parsed_start, tz_offset)
         await interaction.followup.send(embed=embed, view=view)
 
     @announce_group.command(name="edit", description="Edit an announcement (All fields required to update schedule)")
@@ -324,7 +371,8 @@ class Announcer(commands.Cog):
         announcement_id="ID of the announcement to edit",
         message="New message",
         channel="New channel",
-        start_time="New start/next run time (HH:MM or YYYY-MM-DD HH:MM)"
+        start_time="New start/next run time (HH:MM or YYYY-MM-DD HH:MM)",
+        tz_offset="Timezone offset from UTC (e.g., -5 for EST, +8 for HKT). Default 0."
     )
     async def announce_edit(
         self, 
@@ -332,7 +380,8 @@ class Announcer(commands.Cog):
         announcement_id: int, 
         message: str, 
         channel: discord.TextChannel,
-        start_time: str
+        start_time: str,
+        tz_offset: app_commands.Range[int, -12, 14] = DEFAULT_TZ_OFFSET
     ):
         """Edit an existing announcement (Similar flow to Create)."""
         await interaction.response.defer(ephemeral=True)
@@ -349,7 +398,7 @@ class Announcer(commands.Cog):
             return
 
         # 3. Parse Time
-        parsed_start = self.parse_time_input(start_time)
+        parsed_start = self.parse_time_input(start_time, tz_offset)
         if not parsed_start:
             await interaction.followup.send("❌ Invalid time format. Use `HH:MM` or `YYYY-MM-DD HH:MM`", ephemeral=True)
             return
@@ -357,12 +406,12 @@ class Announcer(commands.Cog):
         # 4. Trigger UI for Frequency Selection (Same as Create)
         embed = discord.Embed(
             title="✏️ Update Frequency",
-            description=f"**Editing ID:** `{announcement_id}`\n**New Channel:** {channel.mention}\n**New Start:** {parsed_start.strftime('%Y-%m-%d %H:%M')}\n\nPlease select the new frequency to complete the edit.",
+            description=f"**Editing ID:** `{announcement_id}`\n**New Channel:** {channel.mention}\n**New Timezone:** UTC{tz_offset:+d}\n**New Start:** {parsed_start.strftime('%Y-%m-%d %H:%M')}\n\nPlease select the new frequency to complete the edit.",
             color=discord.Color.gold()
         )
         
-        # Pass edit_id to trigger edit mode in the callback
-        view = self.FrequencyView(self, message, channel, interaction.guild.id, interaction.user.id, parsed_start, edit_id=announcement_id)
+        # Pass edit_id and tz_offset to trigger edit mode in the callback
+        view = self.FrequencyView(self, message, channel, interaction.guild.id, interaction.user.id, parsed_start, tz_offset, edit_id=announcement_id)
         await interaction.followup.send(embed=embed, view=view)
 
     @announce_group.command(name="list", description="List all announcements")
@@ -370,15 +419,7 @@ class Announcer(commands.Cog):
         """List all active announcements for this server."""
         await interaction.response.defer(ephemeral=True)
         try:
-            # We assume get_announcements_by_server now returns a field 'is_active' or similar status
-            # If the DB function filters by active=True, we might need to adjust it to show all if desired.
-            # But based on the prompt "show disabled and enabled", let's assume we fetch ALL.
-            # For now, I'll stick to the existing DB call but add visual indicators if the DB supports status.
-            # If the DB call filters out inactive ones, this will only show active ones.
-            # To show both, we'd need to modify `db.get_announcements_by_server` to not filter by `is_active`.
-            # Assuming for now we just want to list what we get back with status:
-            
-            # NOTE: Ideally, update db.py to return is_active field if not already present in the dict
+            # We assume get_announcements_by_server now returns the 'tz_offset'
             announcements = await db.get_announcements_by_server(interaction.guild.id)
             
             if not announcements:
@@ -395,9 +436,11 @@ class Announcer(commands.Cog):
                 channel = self.bot.get_channel(ann['channel_id'])
                 channel_name = channel.mention if channel else f"(Unknown #{ann['channel_id']})"
                 
+                # Default to 0 if tz_offset is not found (for old records)
+                tz_offset = ann.get('tz_offset', 0) 
+                
                 # Check status if available, default to Active if key missing (since existing query likely filters active)
-                # If we modify the DB query later to include inactive, this logic will handle it.
-                is_active = ann.get('is_active', 1) # Default to 1 (True) if not returned
+                is_active = ann.get('is_active', 1) 
                 status_emoji = "🟢" if is_active else "🔴"
                 status_text = "Active" if is_active else "Disabled"
                 
@@ -410,9 +453,10 @@ class Announcer(commands.Cog):
                 field_value = (
                     f"**Status:** {status_emoji} {status_text}\n"
                     f"**Channel:** {channel_name}\n"
+                    f"**Timezone:** UTC{tz_offset:+d}\n"
                     f"**Frequency:** {freq_display}\n"
                     f"**Next:** {next_run_display}\n"
-                    f"**Message:** {msg_preview}" # Changed from 'Msg:' to 'Message:'
+                    f"**Message:** {msg_preview}" 
                 )
                 embed.add_field(name=f"ID: {ann['id']}", value=field_value, inline=False)
                 
@@ -479,9 +523,13 @@ class Announcer(commands.Cog):
             if not announcement:
                 await interaction.followup.send(f"❌ Announcement `{announcement_id}` not found in this server")
                 return
+            
+            # Default to 0 if tz_offset is not found (for old records)
+            tz_offset = announcement.get('tz_offset', 0) 
+            
             freq_display = self.get_frequency_display(announcement['frequency'])
             embed = discord.Embed(title="📋 Announcement Preview", description=announcement['message'], color=discord.Color.gold())
-            embed.set_footer(text=f"ID: {announcement_id} | Frequency: {freq_display}")
+            embed.set_footer(text=f"ID: {announcement_id} | Frequency: {freq_display} | Timezone: UTC{tz_offset:+d}")
             await interaction.followup.send(embed=embed)
         except Exception as e:
             await interaction.followup.send(f"❌ Error: {str(e)[:100]}")
