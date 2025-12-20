@@ -5,15 +5,68 @@ from bs4 import BeautifulSoup
 import re
 import os
 from datetime import datetime
+from typing import Optional, List, Dict
 
 logger = logging.getLogger(__name__)
 
 # Perplexity API key for fallback
 PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY")
 
+def validate_content(content: str, query: str) -> bool:
+    """
+    Validates if the scraped content is useful.
+    Returns False if the content looks like an error, captcha, or is too short.
+    """
+    if not content or len(content) < 50:
+        return False
+    
+    content_lower = content.lower()
+    
+    # Common error messages from scraping
+    error_phrases = [
+        "access denied", 
+        "security check", 
+        "enable javascript", 
+        "captcha", 
+        "robot", 
+        "403 forbidden", 
+        "404 not found",
+        "turn on cookies",
+        "browser is not supported"
+    ]
+    
+    if any(phrase in content_lower for phrase in error_phrases):
+        return False
 
-async def web_search(query: str, max_results: int = 5) -> str:
-    """Search the web using DDGS with fresh/no-cache results."""
+    return True
+
+def format_search_results(results: List[Dict], query: str) -> str:
+    """Formats structured search results into a display string."""
+    if not results:
+        return None
+        
+    summary = f"📡 **Fresh Search Results for '{query}':**\n\n"
+    
+    for i, result in enumerate(results, 1):
+        title = result.get('title', 'No title')
+        body = result.get('body', 'No description')
+        link = result.get('href', 'No link')
+        is_official = result.get('is_official', False)
+        
+        emoji = "💰" if result.get('is_financial', False) else "📊"
+        official_tag = " ✅ Official" if is_official else ""
+        
+        summary += f"{emoji} **{i}. {title}**{official_tag}\n"
+        summary += f"{body}\n"
+        summary += f"🔗 {link}\n\n"
+        
+    return summary
+
+async def web_search(query: str, max_results: int = 5) -> Optional[List[Dict]]:
+    """
+    Search the web using DDGS. 
+    Returns a list of dictionaries if successful and valid, otherwise None.
+    """
     try:
         from ddgs import DDGS
         
@@ -21,138 +74,109 @@ async def web_search(query: str, max_results: int = 5) -> str:
         
         query_lower = query.lower()
         
-        # Always add "today" or "now" for real-time queries
-        realtime_keywords = ['price', 'btc', 'ethereum', 'crypto', 'rate', 'cost', 'current']
+        # Real-time/Financial query detection
+        is_financial = False
+        realtime_keywords = ['price', 'btc', 'ethereum', 'crypto', 'stock', 'rate', 'cost', 'current', 'trading', 'value']
         if any(keyword in query_lower for keyword in realtime_keywords):
-            # Force fresh results with date/time
+            is_financial = True
             today = datetime.now().strftime("%B %d, %Y")
             search_query = f'"{query}" today {today} -cache -old'
         else:
             search_query = query
-        
-        # Crypto detection - use direct price search with today
-        crypto_symbols = {
-            'btc': 'bitcoin price today USD',
-            'eth': 'ethereum price today USD',
-            'doge': 'dogecoin price today USD',
-            'crypto': 'cryptocurrency prices today',
-            'bitcoin': 'bitcoin price today USD',
-            'ethereum': 'ethereum price today USD'
-        }
-        
-        for symbol, replacement in crypto_symbols.items():
-            if symbol in query_lower:
-                search_query = replacement
-                break
-        
-        logger.info(f"🔍 Search query: {search_query}")
+            
+        # Specific crypto overrides (keeping existing logic but safer)
+        if 'price' in query_lower:
+            if 'btc' in query_lower or 'bitcoin' in query_lower:
+                search_query = 'bitcoin price today USD'
+            elif 'eth' in query_lower or 'ethereum' in query_lower:
+                search_query = 'ethereum price today USD'
+
+        logger.debug(f"🔍 Executing search query: {search_query}")
         
         results = []
         try:
             with DDGS() as ddgs:
-                results = list(ddgs.text(search_query, max_results=max_results + 3))
+                # Fetch slightly more to allow for filtering
+                results = list(ddgs.text(search_query, max_results=max_results + 5))
         except Exception as search_err:
-            logger.error(f"DDGS search error: {search_err}")
-            # Fallback to basic search
+            logger.warning(f"DDGS primary search failed: {search_err}")
+            # Try fallback without advanced operators
             try:
                 with DDGS() as ddgs:
-                    results = list(ddgs.text(query, max_results=max_results))
-            except:
+                    results = list(ddgs.text(query, max_results=max_results + 3))
+            except Exception as e:
+                logger.error(f"DDGS fallback search failed: {e}")
                 return None
         
-        if not results or len(results) == 0:
-            logger.warning(f"⚠️ No search results for: {query}")
+        if not results:
+            logger.warning(f"⚠️ No results returned from DDGS for: {query}")
             return None
         
-        # Filter relevant results - prioritize recent/official sources
         filtered_results = []
-        query_words = set(query.lower().split())
+        official_sites = ['coinmarketcap.com', 'coingecko.com', 'finance.yahoo.com', 'google.com/finance', 'bloomberg.com', 'cnbc.com']
         
         for result in results:
-            title = result.get('title', '').lower()
-            body = result.get('body', '').lower()
-            link = result.get('href', 'No link')
+            title = result.get('title', '')
+            body = result.get('body', '')
+            link = result.get('href', '')
             
-            # Prioritize official sources
-            official_sites = ['coinmarketcap', 'coingecko', 'yahoo finance', 'google finance', 'bloomberg']
-            is_official = any(site in link.lower() for site in official_sites)
-            
-            # Skip irrelevant sites
-            blocked_sites = ['reddit.com', 'forum', 'discuss', 'twitter.com', 'facebook.com']
+            # 1. Validation Check: If content looks like an error, skip it
+            if not validate_content(body, query):
+                continue
+
+            # 2. Link Filtering
+            blocked_sites = ['reddit.com', 'twitter.com', 'facebook.com', 'instagram.com']
             if any(blocked in link for blocked in blocked_sites):
                 continue
+
+            # 3. Relevance & Official Scoring
+            is_official = any(site in link.lower() for site in official_sites)
             
-            # For crypto/price queries, strictly filter
-            if any(keyword in query_lower for keyword in ['price', 'btc', 'crypto', 'ethereum']):
-                # Must contain price/market data
-                if any(keyword in title + body for keyword in ['price', 'usd', '$', 'market cap', 'trading', '24h']):
-                    # Prioritize official sources first
-                    if is_official:
-                        filtered_results.insert(0, result)  # Add to front
-                    else:
-                        filtered_results.append(result)
-                else:
-                    continue
+            # Clean up body text
+            body = re.sub(r'\s+', ' ', body).strip()
+            if len(body) > 300:
+                body = body[:297] + "..."
+
+            entry = {
+                'title': title,
+                'body': body,
+                'href': link,
+                'is_official': is_official,
+                'is_financial': is_financial
+            }
+
+            # Prioritization logic
+            if is_official:
+                filtered_results.insert(0, entry)
             else:
-                # For other queries, be lenient
-                if len(query_words) <= 2:
-                    filtered_results.append(result)
-                else:
-                    matching_words = sum(1 for word in query_words if word in title or word in body)
-                    if matching_words >= 1:
-                        filtered_results.append(result)
-            
+                filtered_results.append(entry)
+                
             if len(filtered_results) >= max_results:
                 break
         
+        # Final sanity check on the result set
         if not filtered_results:
-            logger.warning(f"⚠️ No relevant results after filtering - {len(results)} total results found")
+            logger.warning("⚠️ Results existed but were filtered out as invalid/irrelevant.")
             return None
-        
-        # Format detailed results with freshness indicator
-        summary = f"📡 **Fresh Search Results for '{query}':**\n\n"
-        
-        for i, result in enumerate(filtered_results[:max_results], 1):
-            try:
-                title = result.get('title', 'No title')
-                body = result.get('body', 'No description')
-                link = result.get('href', 'No link')
-                
-                # Clean up body text
-                body = body[:250] if body else "No description available"
-                body = re.sub(r'\s+', ' ', body).strip()
-                
-                # Mark official sources
-                is_official = any(site in link.lower() for site in ['coinmarketcap', 'coingecko', 'yahoo', 'google', 'bloomberg'])
-                emoji = "💰" if '$' in body or 'USD' in body else "📊"
-                official_tag = " ✅ Official" if is_official else ""
-                
-                summary += f"{emoji} **{i}. {title}**{official_tag}\n"
-                summary += f"{body}\n"
-                summary += f"🔗 {link}\n\n"
-            except Exception as e:
-                logger.error(f"Error processing result {i}: {e}")
-                continue
-        
-        logger.info(f"✅ Fresh web search successful - found {len(filtered_results)} relevant results")
-        return summary if summary != f"📡 **Fresh Search Results for '{query}':**\n\n" else None
+            
+        return filtered_results
         
     except ImportError:
         logger.error("❌ ddgs package not installed. Run: pip install ddgs")
         return None
     except Exception as e:
-        logger.error(f"❌ Web search error: {e}")
+        logger.error(f"❌ Web search unexpected error: {e}")
         return None
 
 
-async def perplexity_search(query: str) -> str:
-    """Fallback to Perplexity API for real-time data when DDGS insufficient."""
+async def perplexity_search(query: str) -> Optional[str]:
+    """Fallback to Perplexity API for real-time data."""
     if not PERPLEXITY_API_KEY:
         logger.warning("⚠️ PERPLEXITY_API_KEY not configured - skipping Perplexity fallback")
         return None
     
     try:
-        logger.info(f"🔄 Using Perplexity API (real-time) for: {query}")
+        logger.info(f"🔄 Triggering Perplexity API (Fallback/Real-time) for: {query}")
         
         # Add context for real-time data
         enhanced_query = f"{query} - provide current/today's data only"
@@ -166,6 +190,10 @@ async def perplexity_search(query: str) -> str:
             payload = {
                 "model": "sonar",
                 "messages": [
+                    {
+                        "role": "system",
+                        "content": "You are a helpful search assistant. Provide current, up-to-date information."
+                    },
                     {
                         "role": "user",
                         "content": enhanced_query
@@ -184,7 +212,7 @@ async def perplexity_search(query: str) -> str:
                     content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
                     
                     if content:
-                        logger.info(f"✅ Perplexity API returned real-time results")
+                        logger.info(f"✅ Perplexity API returned valid results")
                         return f"🌐 **Real-Time Data (Perplexity AI):**\n\n{content}"
                     else:
                         logger.warning("Perplexity API returned empty content")
@@ -201,84 +229,57 @@ async def perplexity_search(query: str) -> str:
         return None
 
 
-async def fetch_url_content(url: str, timeout: int = 10) -> str:
-    """Fetch and parse content from a URL."""
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=timeout, headers={'User-Agent': 'Mozilla/5.0'}) as response:
-                if response.status == 200:
-                    html = await response.text()
-                    soup = BeautifulSoup(html, 'html.parser')
-                    
-                    # Remove script and style elements
-                    for script in soup(["script", "style", "nav", "footer"]):
-                        script.decompose()
-                    
-                    # Get text
-                    text = soup.get_text()
-                    lines = (line.strip() for line in text.splitlines())
-                    chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-                    text = ' '.join(chunk for chunk in chunks if chunk)
-                    
-                    return text[:1500]
-                else:
-                    logger.warning(f"URL fetch failed with status {response.status}")
-                    return None
-    except asyncio.TimeoutError:
-        logger.error(f"Timeout fetching URL: {url}")
-        return None
-    except Exception as e:
-        logger.error(f"URL fetch error: {e}")
-        return None
-
-
 async def search_and_summarize(query: str) -> str:
-    """Search the web with real-time focus. Returns None if no results."""
-    logger.info(f"📡 Initiating real-time search for: '{query}'")
+    """
+    Main entry point. 
+    1. Tries DDGS (free).
+    2. Validates results.
+    3. Falls back to Perplexity (paid) if DDGS fails or results are invalid.
+    """
+    logger.info(f"📡 Initiating search workflow for: '{query}'")
     
     try:
-        # Try DDGS first (fast, fresh)
-        result = await asyncio.wait_for(web_search(query), timeout=15.0)
+        # Step 1: Try Free Search
+        results = await asyncio.wait_for(web_search(query), timeout=15.0)
         
-        if result:
-            logger.info(f"✅ DDGS returned fresh results")
-            return result
-        else:
-            logger.warning(f"⚠️ DDGS insufficient - requesting Perplexity real-time data...")
-            # Fallback to Perplexity for real-time data
-            perplexity_result = await perplexity_search(query)
-            if perplexity_result:
-                return perplexity_result
+        # Step 2: Validate Results
+        if results and len(results) > 0:
+            formatted_response = format_search_results(results, query)
+            if formatted_response:
+                logger.info(f"✅ DDGS returned {len(results)} valid results")
+                return formatted_response
             else:
-                logger.warning(f"⚠️ Perplexity also returned no results for: {query}")
-                return None
+                logger.warning("⚠️ DDGS results formatting failed")
+        else:
+            logger.warning(f"⚠️ DDGS returned no valid results (incorrect/empty data).")
+
+        # Step 3: Fallback to Perplexity
+        logger.info("🔄 Switching to Perplexity API fallback...")
+        perplexity_result = await perplexity_search(query)
+        
+        if perplexity_result:
+            return perplexity_result
+        else:
+            logger.warning(f"⚠️ Perplexity also returned no results for: {query}")
+            return None
             
     except asyncio.TimeoutError:
-        logger.error("⏱️ DDGS timeout - requesting Perplexity real-time data...")
+        logger.error("⏱️ DDGS timeout - requesting Perplexity...")
         perplexity_result = await perplexity_search(query)
         if perplexity_result:
             return perplexity_result
-        else:
-            logger.error("Perplexity API also timed out")
-            return None
+        return None
     except Exception as e:
-        logger.error(f"❌ Search error: {e} - requesting Perplexity real-time data...")
+        logger.error(f"❌ Search workflow error: {e}")
         perplexity_result = await perplexity_search(query)
-        if perplexity_result:
-            return perplexity_result
-        else:
-            logger.error(f"Perplexity API also failed: {e}")
-            return None
+        return perplexity_result
 
 
 async def get_latest_info(query: str) -> str:
-    """Get the latest/real-time information. Returns formatted string or empty."""
+    """Wrapper for external calls."""
     try:
         result = await search_and_summarize(query)
-        if result:
-            return result
-        else:
-            return ""
+        return result if result else ""
     except Exception as e:
         logger.error(f"Error getting latest info: {e}")
         return ""
