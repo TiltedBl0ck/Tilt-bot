@@ -80,6 +80,15 @@ async def init_db() -> bool:
                 );
             """)
 
+            # Check for old details table schema and migrate if necessary
+            await cursor.execute("PRAGMA table_info(details)")
+            columns = await cursor.fetchall()
+            if columns:
+                col_names = [col[1] for col in columns]
+                if 'announcement_id' not in col_names or 'info' not in col_names:
+                    logger.warning("Detected old 'details' table schema. Dropping and recreating.")
+                    await cursor.execute("DROP TABLE details")
+
             # Create details table (Updated for Announcements)
             await cursor.execute("""
                 CREATE TABLE IF NOT EXISTS details (

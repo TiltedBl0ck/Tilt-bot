@@ -259,8 +259,19 @@ class Announcer(commands.Cog):
             if len(msg_preview) > 800:
                 msg_preview = msg_preview[:800] + "..."
             
+            # Fetch details
+            details = await db.get_detail(ann['id'])
+            
+            # Format Name: ID num - {Details}
+            name_str = f"📢 ID: {ann['id']}"
+            if details:
+                # Truncate details for the title if too long to prevent errors (max 256 for name)
+                # Keep it reasonably short
+                short_details = details[:100] + "..." if len(details) > 100 else details
+                name_str += f" - {short_details}"
+
             embed.add_field(
-                name=f"📢 ID: {ann['id']}",
+                name=name_str,
                 value=f"**Channel:** <#{ann['channel_id']}>\n**Freq:** {freq}\n**Next:** {next_run_str}\n**Message:**\n{msg_preview}",
                 inline=False
             )
