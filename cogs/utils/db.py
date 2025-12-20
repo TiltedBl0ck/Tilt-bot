@@ -79,6 +79,16 @@ async def init_db() -> bool:
                     is_active INTEGER DEFAULT 1
                 );
             """)
+
+            # Create details table (NEW)
+            await cursor.execute("""
+                CREATE TABLE IF NOT EXISTS details (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    description TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
             
             await cursor.execute("CREATE INDEX IF NOT EXISTS idx_announcements_server_id ON announcements(server_id)")
             

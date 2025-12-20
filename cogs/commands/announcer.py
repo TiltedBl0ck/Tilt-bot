@@ -118,11 +118,31 @@ class Announcer(commands.Cog):
             freq = self.values[0]
             await inter.response.defer(ephemeral=True)
             try:
+                # Helper to create detail embed
+                def create_detail_embed(title, ann_id, channel_id, frequency, next_run, message):
+                    embed = discord.Embed(title=title, color=discord.Color.green())
+                    embed.add_field(name="ID", value=str(ann_id), inline=True)
+                    embed.add_field(name="Channel", value=f"<#{channel_id}>", inline=True)
+                    embed.add_field(name="Frequency", value=self.parent_cog.get_frequency_display(frequency), inline=True)
+                    embed.add_field(name="Next Run", value=next_run.strftime('%Y-%m-%d %H:%M'), inline=True)
+                    # Show more of the message in the confirmation
+                    msg_display = message[:1000] + ("..." if len(message) > 1000 else "")
+                    embed.add_field(name="Message", value=msg_display, inline=False)
+                    return embed
+
                 if self.edit_id:
                     updates = {'message': self.message, 'channel_id': self.channel.id, 'frequency': freq, 'next_run': self.start_dt}
                     success = await db.update_announcement_details(self.edit_id, self.guild_id, updates)
                     if success:
-                        await inter.followup.send(f"✅ Announcement `{self.edit_id}` updated.")
+                        embed = create_detail_embed(
+                            "✅ Announcement Updated", 
+                            self.edit_id, 
+                            self.channel.id, 
+                            freq, 
+                            self.start_dt, 
+                            self.message
+                        )
+                        await inter.followup.send(embed=embed)
                     else:
                         await inter.followup.send("❌ DB update failed.")
                 else:
@@ -132,7 +152,15 @@ class Announcer(commands.Cog):
                         manual_next_run=self.start_dt
                     )
                     if ann_id:
-                        await inter.followup.send(f"✅ Announcement created! ID: `{ann_id}`")
+                        embed = create_detail_embed(
+                            "✅ Announcement Created", 
+                            ann_id, 
+                            self.channel.id, 
+                            freq, 
+                            self.start_dt, 
+                            self.message
+                        )
+                        await inter.followup.send(embed=embed)
                     else:
                         await inter.followup.send("❌ Failed to create announcement.")
             except Exception as e:
@@ -164,9 +192,18 @@ class Announcer(commands.Cog):
         embed = discord.Embed(title="Server Announcements", color=discord.Color.blue())
         for ann in announcements:
             freq = self.get_frequency_display(ann['frequency'])
+            
+            # Format Next Run
+            next_run_str = ann['next_run'].strftime('%Y-%m-%d %H:%M') if ann['next_run'] else "N/A"
+            
+            # Message Preview (Increased limit)
+            msg_preview = ann['message']
+            if len(msg_preview) > 800:
+                msg_preview = msg_preview[:800] + "..."
+            
             embed.add_field(
-                name=f"ID: {ann['id']}",
-                value=f"**Freq:** {freq}\n**Next:** {ann['next_run'].strftime('%H:%M')}\n**Msg:** {ann['message'][:50]}...",
+                name=f"📢 ID: {ann['id']}",
+                value=f"**Channel:** <#{ann['channel_id']}>\n**Freq:** {freq}\n**Next:** {next_run_str}\n**Message:**\n{msg_preview}",
                 inline=False
             )
         await interaction.followup.send(embed=embed)
