@@ -69,21 +69,35 @@ class Announcer(commands.Cog):
             if run_time and run_time <= now + timedelta(seconds=2):
                 try:
                     channel = self.bot.get_channel(ann['channel_id'])
+                    
+                    # --- STALENESS CHECK ---
+                    # If an announcement is recurring and overdue by > 5 minutes (e.g. bot was offline),
+                    # skip sending it to prevent spam on startup.
+                    is_stale = False
+                    if ann['frequency'] != 'once':
+                        if (now - run_time) > timedelta(minutes=5):
+                            is_stale = True
+
                     if channel:
-                        await channel.send(ann['message'])
-                        logger.info(f"Announcement {ann['id']} sent.")
+                        if not is_stale:
+                            await channel.send(ann['message'])
+                            logger.info(f"Announcement {ann['id']} sent.")
+                        else:
+                            logger.info(f"Announcement {ann['id']} is stale (overdue). Skipping send and rescheduling.")
                         
                         if ann['frequency'] == 'once':
                             await db.mark_announcement_inactive(ann['id'])
                             self.cached_announcements.remove(ann)
                         else:
                             # Update next run in DB and local cache
+                            # db.update_announcement_next_run handles finding the next *future* slot
                             new_run = await db.update_announcement_next_run(ann['id'], ann['frequency'])
                             if new_run:
                                 ann['next_run'] = new_run
                             else:
                                 self.cached_announcements.remove(ann)
                     else:
+                        # Channel not found/deleted
                         await db.mark_announcement_inactive(ann['id'])
                         self.cached_announcements.remove(ann)
                 except Exception as e:
