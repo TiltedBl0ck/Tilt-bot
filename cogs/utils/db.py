@@ -23,12 +23,13 @@ UTC_PLUS_8 = timezone(timedelta(hours=8))
 
 async def init_db() -> bool:
     """Initializes the SQLite database and schema."""
-    global _db_connection
+    global _db_connection, pool
     if _db_connection: return True
     
     os.makedirs(os.path.dirname(DB_FILE), exist_ok=True)
     try:
         _db_connection = await aiosqlite.connect(DB_FILE)
+        pool = _db_connection  # Set pool to the actual connection for compatibility checks
         await _db_connection.execute("PRAGMA journal_mode=WAL;")
         await _db_connection.execute("PRAGMA foreign_keys=ON;")
         await _db_connection.commit()
@@ -78,17 +79,20 @@ async def init_db() -> bool:
             """)
             await cursor.execute("CREATE INDEX IF NOT EXISTS idx_announcements_server_id ON announcements(server_id)")
         await _db_connection.commit()
-        logger.info("Database initialized.")
+        logger.info(f"SQLite connection established to {DB_FILE} (WAL Mode enabled).")
         return True
     except Exception as e:
         logger.critical(f"DB Init failed: {e}")
+        pool = None  # Ensure pool is None if initialization fails
         return False
 
 async def close_pool():
-    global _db_connection
+    global _db_connection, pool
     if _db_connection:
         await _db_connection.close()
         _db_connection = None
+        pool = None
+        logger.info("SQLite connection closed.")
 
 @asynccontextmanager
 async def get_db_connection():
@@ -248,4 +252,6 @@ async def update_announcement_details(ann_id, server_id, updates):
     await _db_connection.commit()
     return True
 
-pool = "SQLiteConnected"
+# Pool variable for compatibility with code that checks database availability
+# Will be set to _db_connection when initialized, None otherwise
+pool = None
