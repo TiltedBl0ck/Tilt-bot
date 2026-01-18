@@ -1,17 +1,13 @@
 """
-Tilt-bot - Main Bot File
-A comprehensive Discord bot with moderation, utility, AI, and management features.
+Tilt-bot - Main entry point
+Discord bot with moderation, utility, AI, and management features.
 """
-import asyncio
-import logging
-import os
-import json
+import asyncio, logging, os, json
 from pathlib import Path
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 
-# Import the db utility module itself
 import cogs.utils.db as db_utils
 
 # --- Logging Setup ---
@@ -27,89 +23,87 @@ logging.getLogger('discord.http').setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
-# --- Main Bot Class ---
 class TiltBot(commands.Bot):
-    """The main bot class, inheriting from commands.Bot."""
+    """The main bot class."""
+
     def __init__(self) -> None:
         intents = discord.Intents.default()
-        intents.message_content = True 
-        intents.members = True 
+        intents.message_content = True
+        intents.members = True
 
-        super().__init__(command_prefix='!', intents=intents) 
+        super().__init__(command_prefix='!', intents=intents)
 
         self.version = "N/A"
+        config_path = Path(__file__).parent / 'configs' / 'config.json'
         try:
-            config_path = Path(__file__).parent / 'configs' / 'config.json'
-            with open(config_path, 'r') as config_file:
-                config = json.load(config_file)
-                self.version = config.get("bot", {}).get("version", "N/A")
+            with open(config_path, 'r') as f:
+                self.version = json.load(f).get("bot", {}).get("version", "N/A")
         except FileNotFoundError:
-            logger.warning(f"config.json not found.")
+            logger.warning("config.json not found - that's fine, we'll use the default version.")
         except json.JSONDecodeError:
-            logger.error("Error decoding config.json.")
-
+            logger.error("Looks like config.json has some issues. Skipping version load.")
 
     async def setup_hook(self) -> None:
-        """Async setup hook."""
-        logger.info("--- Starting Bot Setup ---")
+        """Run our async setup - db init, loading cogs, syncing commands."""
+        logger.info("--- Setting up the bot ---")
 
-        # Initialize the database (Now SQLite)
+        # Fire up the database first
         try:
             await db_utils.init_db()
-            logger.info("Database initialized.")
+            logger.info("Database ready to go.")
         except Exception as e:
-            logger.critical(f"Database initialization failed: {e}", exc_info=True)
+            logger.critical(f"Database failed to initialize: {e}", exc_info=True)
             await self.close()
             return
 
-        # Load handler
+        # Load the handler cog - this is where most of the command magic lives
         try:
             await self.load_extension('cogs.handler')
-            logger.info("Successfully loaded handler cog.")
+            logger.info("Handler cog loaded.")
         except commands.ExtensionError as e:
-             logger.critical(f"Failed to load handler cog: {e}", exc_info=True)
-             await self.close()
-             return
+            logger.critical(f"Couldn't load handler cog: {e}", exc_info=True)
+            await self.close()
+            return
 
-        # Sync commands
+        # Sync those slash commands so they show up
         try:
             synced = await self.tree.sync()
-            logger.info(f"Successfully synced {len(synced)} application commands.")
+            logger.info(f"Synced {len(synced)} application commands.")
         except Exception as e:
-            logger.error(f"Error during command sync: {e}", exc_info=True)
+            logger.error(f"Command sync choked: {e}", exc_info=True)
 
     async def on_ready(self) -> None:
-        """Called when bot is ready."""
-        if not self.user: 
+        """Bot's all ready - let us know."""
+        if not self.user:
             return
 
         logger.info(f'Logged in as {self.user} (ID: {self.user.id})')
-        activity_name = f"{len(self.guilds)} servers | /help"
-        await self.change_presence(status=discord.Status.online, activity=discord.Activity(type=discord.ActivityType.watching, name=activity_name))
+        activity = f"{len(self.guilds)} servers | /help"
+        await self.change_presence(
+            status=discord.Status.online,
+            activity=discord.Activity(type=discord.ActivityType.watching, name=activity)
+        )
 
     async def close(self):
-        """Cleanup."""
-        await db_utils.close_pool() 
+        """Clean up before shutdown."""
+        await db_utils.close_pool()
         await super().close()
 
 
 async def main() -> None:
-    """Main entry point."""
-    dotenv_path = Path(__file__).parent / '.env'
-    load_dotenv(dotenv_path=dotenv_path)
+    """Entry point - grab the token and get this party started."""
+    load_dotenv(dotenv_path=Path(__file__).parent / '.env')
 
     token = os.getenv('BOT_TOKEN')
     if not token:
-        logger.critical("BOT_TOKEN not found!")
+        logger.critical("No BOT_TOKEN found in .env - can't start without one!")
         return
 
-    # Note: POSTGRES_DSN is no longer required for SQLite
-    
     bot = TiltBot()
     try:
         await bot.start(token)
     except Exception as e:
-         logger.critical(f"Error: {e}", exc_info=True)
+        logger.critical(f"Boop - error occurred: {e}", exc_info=True)
     finally:
         if bot and not bot.is_closed():
             await bot.close()
@@ -120,4 +114,4 @@ if __name__ == '__main__':
     try:
         asyncio.run(main())
     except Exception as e:
-         logger.critical(f"Critical error: {e}", exc_info=True)
+        logger.critical(f"Serious trouble - critical error: {e}", exc_info=True)
