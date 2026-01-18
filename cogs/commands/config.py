@@ -133,7 +133,32 @@ class ConfigCommands(commands.Cog):
             logger.error(f"Error in config serverstats for guild {guild.id}: {e}", exc_info=True)
             await interaction.followup.send("❌ An error occurred while updating the channel visibility.", ephemeral=True)
 
+    @config_group.command(name="wotd", description="Configure Word of the Day delivery time.")
+    @app_commands.describe(
+        timezone_str="Timezone offset (e.g., 'UTC+8', '-5', '8'). Default is UTC.",
+        hour="Hour of the day to send (0-23). Default is 8 (8 AM)."
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def config_wotd(self, interaction: discord.Interaction, timezone_str: str = "UTC", hour: int = 8):
+        """Sets the timezone and hour for WOTD messages."""
+        if not 0 <= hour <= 23:
+             await interaction.response.send_message("❌ Hour must be between 0 and 23.", ephemeral=True)
+             return
+        
+        # Simple normalization for storage
+        normalized_tz = timezone_str.upper().replace(" ", "")
+        
+        updates = {
+            "wotd_timezone": normalized_tz,
+            "wotd_hour": hour
+        }
+        success = await db_utils.set_guild_config_value(interaction.guild.id, updates)
+        
+        if success:
+             await interaction.response.send_message(f"✅ WOTD configuration updated! I will post at **{hour}:00** in **{normalized_tz}**.", ephemeral=True)
+        else:
+             await interaction.response.send_message("❌ Failed to update configuration.", ephemeral=True)
+
 async def setup(bot: commands.Bot):
     """The setup function to add this cog to the bot."""
     await bot.add_cog(ConfigCommands(bot))
-

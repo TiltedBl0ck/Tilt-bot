@@ -292,8 +292,40 @@ class SetupCommands(commands.Cog):
             else:
                  await interaction.response.send_message("❌ Failed to update database.", ephemeral=True)
 
+    @setup_group.command(name="wotd", description="Set or remove the Word of the Day channel.")
+    @app_commands.describe(action="Choose to set or unset the channel.", channel="The channel for WOTD messages.")
+    @app_commands.choices(action=[
+        app_commands.Choice(name="Set", value="set"),
+        app_commands.Choice(name="Unset", value="unset")
+    ])
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.checks.bot_has_permissions(send_messages=True, embed_links=True)
+    async def setup_wotd(self, interaction: discord.Interaction, action: str, channel: discord.TextChannel = None):
+        """Sets or unsets the Word of the Day channel."""
+        guild_id = interaction.guild.id
+        if action == "set":
+            if channel is None:
+                await interaction.response.send_message("❌ You must specify a channel to set.", ephemeral=True)
+                return
+            
+            # Check perms
+            if not channel.permissions_for(interaction.guild.me).send_messages or \
+               not channel.permissions_for(interaction.guild.me).embed_links:
+                await interaction.response.send_message(f"❌ I don't have permission to send embed messages in {channel.mention}.", ephemeral=True)
+                return
+
+            success = await db_utils.set_guild_config_value(guild_id, {"wotd_channel_id": channel.id})
+            if success:
+                await interaction.response.send_message(f"✅ Word of the Day channel has been set to {channel.mention}.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Failed to update database.", ephemeral=True)
+        else: # Unset
+            success = await db_utils.set_guild_config_value(guild_id, {"wotd_channel_id": None})
+            if success:
+                await interaction.response.send_message("✅ Word of the Day channel has been unset.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Failed to update database.", ephemeral=True)
 
 async def setup(bot: commands.Bot):
     """The setup function to add this cog to the bot."""
     await bot.add_cog(SetupCommands(bot))
-

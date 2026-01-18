@@ -52,9 +52,31 @@ async def init_db() -> bool:
                     current_count INTEGER DEFAULT 0,
                     last_counter_id INTEGER,
                     ai_chat_enabled INTEGER DEFAULT 0,
-                    ai_chat_channel_id INTEGER
+                    ai_chat_channel_id INTEGER,
+                    wotd_channel_id INTEGER,
+                    wotd_timezone TEXT DEFAULT 'UTC',
+                    wotd_hour INTEGER DEFAULT 8,
+                    wotd_last_word TEXT
                 );
             """)
+
+            # --- Schema Migration Check ---
+            # Attempt to add wotd columns if they don't exist (for existing DBs)
+            migrations = [
+                "ALTER TABLE guild_config ADD COLUMN wotd_channel_id INTEGER",
+                "ALTER TABLE guild_config ADD COLUMN wotd_timezone TEXT DEFAULT 'UTC'",
+                "ALTER TABLE guild_config ADD COLUMN wotd_hour INTEGER DEFAULT 8",
+                "ALTER TABLE guild_config ADD COLUMN wotd_last_word TEXT"
+            ]
+            
+            for sql in migrations:
+                try:
+                    await cursor.execute(sql)
+                    logger.info(f"Migrated DB: Executed {sql}")
+                except Exception:
+                    # Column likely already exists, ignore error
+                    pass
+
             await cursor.execute("""
                 CREATE TABLE IF NOT EXISTS announcements (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -151,6 +173,27 @@ async def update_counting_stats(guild_id: int, count: int, user_id: Optional[int
         "current_count": count,
         "last_counter_id": user_id
     })
+
+# --- WOTD Specifics ---
+async def get_wotd_configs() -> List[Dict[str, Any]]:
+    """Fetches all guilds that have WOTD enabled with scheduling info."""
+    try:
+        async with _db_connection.execute("SELECT guild_id, wotd_channel_id, wotd_timezone, wotd_hour, wotd_last_word FROM guild_config WHERE wotd_channel_id IS NOT NULL") as cursor:
+            rows = await cursor.fetchall()
+            return [{
+                "guild_id": r[0], 
+                "wotd_channel_id": r[1],
+                "wotd_timezone": r[2] or 'UTC',
+                "wotd_hour": r[3] if r[3] is not None else 8,
+                "wotd_last_word": r[4]
+            } for r in rows]
+    except Exception as e:
+        logger.error(f"Error fetching WOTD configs: {e}")
+        return []
+
+async def update_guild_wotd_word(guild_id: int, word: str) -> bool:
+    """Updates the last sent WOTD for a specific guild."""
+    return await set_guild_config_value(guild_id, {"wotd_last_word": word})
 
 # --- Announcements ---
 def get_next_run_time(frequency: str, anchor_dt: Optional[datetime] = None) -> Optional[datetime]:
