@@ -4,6 +4,15 @@ This repository contains the source code for the Tilt-bot Discord bot.
 
 🚀 Release Notes
 
+**v1.1.0 - The "Configuration & Logging" Update**
+
+This update focuses on improving the bot's configuration management and logging capabilities.
+
+✨ **New Features & Fixes**
+
+*   **Centralized Configuration:** The `bot_memory.json` and `bot.log` files are now stored in the `configs` directory, providing a cleaner project structure.
+*   **Path Fixes:** The bot's code has been updated to correctly locate and use the new paths for configuration and log files.
+
 v1.0.1 - The "Smart & Scheduled" Update
 
 We are excited to announce version 1.0.1, bringing major improvements to stability, intelligence, and server management.

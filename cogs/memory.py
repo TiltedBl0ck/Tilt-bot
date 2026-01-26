@@ -8,7 +8,7 @@ import os
 logger = logging.getLogger(__name__)
 
 # Memory file path
-MEMORY_FILE = "bot_memory.json"
+MEMORY_FILE = "configs/bot_memory.json"
 
 class Memory(commands.Cog):
     """Bot personal memory and context management."""
