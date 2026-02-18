@@ -21,6 +21,15 @@ _cache_timestamps: Dict[int, float] = {}
 
 UTC_PLUS_8 = timezone(timedelta(hours=8))
 
+# Vulnerability Fix: Whitelist of allowed columns to prevent SQL Injection
+VALID_CONFIG_COLUMNS = {
+    "welcome_channel_id", "goodbye_channel_id", "welcome_message", "welcome_image",
+    "goodbye_message", "goodbye_image", "stats_category_id", "member_count_channel_id",
+    "bot_count_channel_id", "role_count_channel_id", "counting_channel_id",
+    "current_count", "last_counter_id", "ai_chat_enabled", "ai_chat_channel_id",
+    "wotd_channel_id", "wotd_timezone", "wotd_hour", "wotd_last_word"
+}
+
 async def init_db() -> bool:
     """Initializes the SQLite database and schema."""
     global _db_connection, pool
@@ -61,7 +70,6 @@ async def init_db() -> bool:
             """)
 
             # --- Schema Migration Check ---
-            # Attempt to add wotd columns if they don't exist (for existing DBs)
             migrations = [
                 "ALTER TABLE guild_config ADD COLUMN wotd_channel_id INTEGER",
                 "ALTER TABLE guild_config ADD COLUMN wotd_timezone TEXT DEFAULT 'UTC'",
@@ -74,7 +82,6 @@ async def init_db() -> bool:
                     await cursor.execute(sql)
                     logger.info(f"Migrated DB: Executed {sql}")
                 except Exception:
-                    # Column likely already exists, ignore error
                     pass
 
             await cursor.execute("""
@@ -149,6 +156,12 @@ get_guild_config = get_config
 async def set_guild_config_value(guild_id: int, updates: Dict[str, Any]) -> bool:
     if not updates: return False
     updates.pop('guild_id', None)
+    
+    # Vulnerability Fix: Strict Column Validation
+    if not all(k in VALID_CONFIG_COLUMNS for k in updates.keys()):
+        logger.error(f"Security Warning: Attempted to update invalid/unauthorized columns: {list(updates.keys())}")
+        return False
+
     try:
         columns = list(updates.keys())
         placeholders = ", ".join(["?"] * (len(columns) + 1))
@@ -168,11 +181,37 @@ async def set_guild_config_value(guild_id: int, updates: Dict[str, Any]) -> bool
 
 # --- Counting Game Specifics ---
 async def update_counting_stats(guild_id: int, count: int, user_id: Optional[int]) -> bool:
-    """Specialized helper for the counting game."""
+    """Simple helper for the counting game (non-atomic)."""
     return await set_guild_config_value(guild_id, {
         "current_count": count,
         "last_counter_id": user_id
     })
+
+# Vulnerability Fix: Atomic update to prevent race conditions in counting game
+async def attempt_counting_update(guild_id: int, expected_current: int, new_count: int, user_id: int) -> bool:
+    """
+    Atomic update for counting game.
+    Only updates if current_count matches expected_current.
+    Returns True if update was successful, False if race condition occurred.
+    """
+    sql = """
+        UPDATE guild_config 
+        SET current_count = ?, last_counter_id = ? 
+        WHERE guild_id = ? AND current_count = ?
+    """
+    try:
+        async with _db_connection.execute(sql, (new_count, user_id, guild_id, expected_current)) as cursor:
+            await _db_connection.commit()
+            # If rowcount > 0, we successfully matched the condition and updated
+            success = cursor.rowcount > 0
+            if success:
+                # Invalidate cache only on success
+                async with _cache_lock:
+                    _config_cache.pop(guild_id, None)
+            return success
+    except Exception as e:
+        logger.error(f"Atomic counting update error: {e}")
+        return False
 
 # --- WOTD Specifics ---
 async def get_wotd_configs() -> List[Dict[str, Any]]:

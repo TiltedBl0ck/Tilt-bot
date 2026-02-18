@@ -197,6 +197,7 @@ class Announcer(commands.Cog):
             super().__init__(timeout=180)
             self.add_item(Announcer.FrequencySelect(parent_cog, msg, ch, guild_id, user_id, start_dt, details, edit_id))
 
+    # Vulnerability Fix: Added administrator check
     @announce_group.command(name="create", description="Create an announcement")
     @app_commands.describe(
         message="The message to announce",
@@ -204,6 +205,7 @@ class Announcer(commands.Cog):
         start_time="Start time (HH:MM or YYYY-MM-DD HH:MM)",
         details="Optional context or description for this announcement (saved to details table)"
     )
+    @app_commands.checks.has_permissions(administrator=True)
     async def announce_create(self, interaction: discord.Interaction, message: str, channel: discord.TextChannel, start_time: str, details: Optional[str] = None):
         parsed = self.parse_time_input(start_time)
         if not parsed:
@@ -213,6 +215,7 @@ class Announcer(commands.Cog):
         view = self.FrequencyView(self, message, channel, interaction.guild.id, interaction.user.id, parsed, details)
         await interaction.response.send_message("Please select a frequency:", view=view, ephemeral=True)
 
+    # Vulnerability Fix: Added administrator check
     @announce_group.command(name="edit", description="Edit an existing announcement")
     @app_commands.describe(
         announcement_id="The ID of the announcement to edit",
@@ -221,6 +224,7 @@ class Announcer(commands.Cog):
         start_time="New start time (leave empty to keep current)",
         details="New details (leave empty to keep current)"
     )
+    @app_commands.checks.has_permissions(administrator=True)
     async def announce_edit(self, interaction: discord.Interaction, announcement_id: int, message: Optional[str] = None, channel: Optional[discord.TextChannel] = None, start_time: Optional[str] = None, details: Optional[str] = None):
         # Fetch current
         current = await db.get_announcement(announcement_id, interaction.guild.id)
@@ -291,7 +295,9 @@ class Announcer(commands.Cog):
             )
         await interaction.followup.send(embed=embed)
 
+    # Vulnerability Fix: Added administrator check
     @announce_group.command(name="stop", description="Stop an announcement")
+    @app_commands.checks.has_permissions(administrator=True)
     async def announce_stop(self, interaction: discord.Interaction, announcement_id: int):
         success = await db.stop_announcement(announcement_id, interaction.guild.id)
         if success:

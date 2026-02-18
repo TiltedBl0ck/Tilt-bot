@@ -38,7 +38,7 @@ class Counting(commands.Cog):
         """
         try:
             current_count = config.get('current_count', 0)
-            last_user_id = config.get('last_user_id')
+            last_user_id = config.get('last_counter_id') # FIX: corrected key name from previous snippet
 
             # Try to parse the number from the message
             try:
@@ -69,13 +69,23 @@ class Counting(commands.Cog):
                 return
 
             # Success!
-            await message.add_reaction("✅")
-            # Update DB with new count and new last_user
-            await db_utils.update_counting_stats(message.guild.id, expected_number, message.author.id)
-
-            # Optional: Milestone celebration
-            if expected_number % 100 == 0:
-                await message.channel.send(f"🎉 **MILESTONE!** We reached **{expected_number}**! 🎉")
+            # Vulnerability Fix: Use atomic update to prevent race conditions
+            success = await db_utils.attempt_counting_update(
+                message.guild.id, 
+                current_count, 
+                expected_number, 
+                message.author.id
+            )
+            
+            if success:
+                await message.add_reaction("✅")
+                # Optional: Milestone celebration
+                if expected_number % 100 == 0:
+                    await message.channel.send(f"🎉 **MILESTONE!** We reached **{expected_number}**! 🎉")
+            else:
+                # Update failed, likely due to a race condition (someone else counted first)
+                await message.add_reaction("⏳") # Indicate race condition/lag
+                logger.warning(f"Race condition in counting game for guild {message.guild.id}")
 
         except Exception as e:
             logger.error(f"Error handling counting logic: {e}")

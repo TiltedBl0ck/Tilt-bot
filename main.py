@@ -7,15 +7,17 @@ from pathlib import Path
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
+from logging.handlers import RotatingFileHandler
 
 import cogs.utils.db as db_utils
 
 # --- Logging Setup ---
+# Vulnerability Fix: Added RotatingFileHandler to prevent disk space exhaustion
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - [%(levelname)s] - %(name)s: %(message)s',
     handlers=[
-        logging.FileHandler('configs/bot.log', encoding='utf-8'),
+        RotatingFileHandler('configs/bot.log', maxBytes=5*1024*1024, backupCount=3, encoding='utf-8'),
         logging.StreamHandler()
     ]
 )

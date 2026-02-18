@@ -68,6 +68,13 @@ class ClearCommand(commands.Cog):
                     "❌ I don't have the `Manage Messages` permission to do this.",
                     ephemeral=True
                 )
+            except discord.HTTPException as e:
+                # Fix: Handle messages older than 14 days error (Error Code 50034)
+                if e.code == 50034:
+                     await interaction.followup.send("❌ I can't bulk delete messages older than 14 days due to Discord limitations.", ephemeral=True)
+                else:
+                     logger.error(f"API Error in clear command: {e}")
+                     await interaction.followup.send("❌ An API error occurred.", ephemeral=True)
             except Exception as e:
                 logger.error(f"Error in clear command: {e}")
                 await interaction.followup.send(
