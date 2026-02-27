@@ -1,415 +1,598 @@
 import logging
+import random
 import discord
 from discord import app_commands
 from discord.ext import commands
 import asyncio
 import os
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 import aiohttp
-import google.generativeai as genai
-from google.api_core import exceptions as google_exceptions
+
+# --- NEW SDK (google-genai) ---
+# Install: pip install google-genai[aiohttp]
+# Replaces the deprecated google-generativeai package.
+try:
+    from google import genai
+    from google.genai import types
+    from google.genai.errors import ClientError
+    HAS_GENAI = True
+except ImportError:
+    HAS_GENAI = False
+    ClientError = Exception  # fallback so except clauses don't crash
+
 from cogs.utils.web_search import get_latest_info
 
 logger = logging.getLogger(__name__)
 
-# Configure Gemini API
+# ── API Keys ──────────────────────────────────────────────────────────────────
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY")
 
 if not GEMINI_API_KEY:
     logger.warning("GEMINI_API_KEY not found. Gemini AI features will not work.")
-else:
-    genai.configure(api_key=GEMINI_API_KEY)
+
+if not HAS_GENAI:
+    logger.error(
+        "google-genai package is not installed. "
+        "Run: pip install google-genai[aiohttp]"
+    )
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+MAX_BACKOFF_SECONDS = 60
+DISCORD_MSG_LIMIT = 1900  # Safe Discord message character limit
 
 
 class Gemini(commands.Cog):
-    """AI chat with Gemini fallback to Perplexity when quota exceeded."""
+    """AI chat powered by Gemini (new google-genai SDK) with Perplexity fallback."""
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.conversation_history = defaultdict(list)
+
+        # Per-channel conversation history  {channel_id: [{"role": ..., "content": ...}]}
+        self.conversation_history: dict[int, list] = defaultdict(list)
+        # Per-channel asyncio.Lock to prevent race conditions on history
+        self._history_locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
         self.max_history = 15
-        
-        # Updated preferred list based on December 2025 availability
-        self.raw_model_list = [
-            "gemini-2.5-flash",      # Latest efficient model (Free tier available)
-            "gemini-2.5-pro",        # High intelligence (Free tier available)
-            "gemini-2.0-flash",      # Stable predecessor
-            "gemini-3-pro-preview",  # Bleeding edge (High intelligence)
-            "gemini-2.5-flash-lite"  # Ultra-fast fallback
+
+        # ── Model rotation list (confirmed-available models as of Feb 2026) ──
+        # gemini-3-pro-preview is NOT a real model and has been removed.
+        self.raw_model_list: list[str] = [
+            "gemini-2.0-flash",          # Stable, fast, free tier
+            "gemini-2.0-flash-lite",     # Ultra-fast fallback
+            "gemini-1.5-flash",          # Reliable fallback
+            "gemini-1.5-pro",            # Highest intelligence fallback
         ]
-        
-        # This will be populated by the validator
-        self.model_list = self.raw_model_list
-        
-        # Track which models are currently quota-limited
-        self.model_status = {model: "unknown" for model in self.model_list}
-        
-        # Safety settings (permissive for Discord bot context)
+        self.model_list: list[str] = list(self.raw_model_list)
+        self.model_status: dict[str, str] = {m: "unknown" for m in self.model_list}
+
+        # ── Safety settings ───────────────────────────────────────────────────
+        # BLOCK_NONE is removed for HATE_SPEECH and DANGEROUS_CONTENT to comply
+        # with Discord ToS and Google API usage policies.
         self.safety_settings = [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+            types.SafetySetting(
+                category="HARM_CATEGORY_HARASSMENT",
+                threshold="BLOCK_ONLY_HIGH",
+            ),
+            types.SafetySetting(
+                category="HARM_CATEGORY_HATE_SPEECH",
+                threshold="BLOCK_MEDIUM_AND_ABOVE",
+            ),
+            types.SafetySetting(
+                category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                threshold="BLOCK_ONLY_HIGH",
+            ),
+            types.SafetySetting(
+                category="HARM_CATEGORY_DANGEROUS_CONTENT",
+                threshold="BLOCK_MEDIUM_AND_ABOVE",
+            ),
         ]
 
-        # Run validation in background to not block bot startup
+        # ── Initialise the new SDK async client ───────────────────────────────
+        if GEMINI_API_KEY and HAS_GENAI:
+            self._client = genai.Client(api_key=GEMINI_API_KEY)
+        else:
+            self._client = None
+
+        # Validate model availability in the background (non-blocking startup)
         self.bot.loop.create_task(self.validate_available_models())
 
-    async def validate_available_models(self):
+    # ─────────────────────────────────────────────────────────────────────────
+    # Model validation
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def validate_available_models(self) -> None:
         """
-        Dynamically checks which models are actually available in the current API version.
-        This prevents 404 errors by removing invalid models from rotation.
+        Calls the API to check which models from raw_model_list are actually
+        available. Removes invalid entries so they never cause 404 errors.
         """
-        if not GEMINI_API_KEY:
+        if not self._client:
             return
 
         logger.info("🔍 Validating available Gemini models...")
         try:
-            # Run the sync list_models call in an executor
-            available_models = await asyncio.to_thread(self._fetch_models_sync)
-            
-            validated_list = []
+            # client.aio.models.list() is native async — no thread needed.
+            available = [
+                m.name async for m in await self._client.aio.models.list()
+            ]
+
+            validated: list[str] = []
             for preferred in self.raw_model_list:
-                # Check if our preferred model exists in the available list
-                # The API returns names like "models/gemini-1.5-flash"
-                if any(m.name.endswith(preferred) for m in available_models):
-                    validated_list.append(preferred)
+                # API returns names like "models/gemini-2.0-flash"
+                if any(name.endswith(preferred) for name in available):
+                    validated.append(preferred)
                     self.model_status[preferred] = "available"
                 else:
                     self.model_status[preferred] = "not_found"
-                    logger.debug(f"⚠️ Model '{preferred}' skipped (not found in current API).")
+                    logger.debug(f"⚠️ Model '{preferred}' not found in API — skipping.")
 
-            if validated_list:
-                self.model_list = validated_list
-                logger.info(f"✅ Gemini Model Rotation Set: {', '.join(self.model_list)}")
+            if validated:
+                self.model_list = validated
+                logger.info(f"✅ Model rotation: {', '.join(self.model_list)}")
             else:
-                logger.warning("❌ No preferred models found in API list! Using raw list as fallback.")
-                self.model_list = self.raw_model_list
+                logger.warning("❌ No preferred models found — using raw list as fallback.")
+                self.model_list = list(self.raw_model_list)
 
-        except Exception as e:
-            logger.error(f"Failed to validate models: {e}")
+        except Exception as exc:
+            logger.error(f"Model validation failed: {exc}")
 
-    def _fetch_models_sync(self):
-        """Helper to fetch models synchronously."""
-        return list(genai.list_models())
+    # ─────────────────────────────────────────────────────────────────────────
+    # System prompt builder
+    # ─────────────────────────────────────────────────────────────────────────
 
-    def build_system_message(self, guild: discord.Guild = None) -> str:
-        """Build system message from memory and server context."""
+    def build_system_message(self, guild: discord.Guild | None = None) -> str:
+        """Compose the system instruction from memory cog + server context."""
         memory_cog = self.bot.get_cog("Memory")
         serverinfo_cog = self.bot.get_cog("ServerInfo")
-        
-        # Get current date and time
-        now = datetime.now()
+
+        # Always use UTC so the timestamp is deterministic regardless of host TZ
+        now = datetime.now(timezone.utc)
         current_date = now.strftime("%A, %B %d, %Y")
-        current_time = now.strftime("%H:%M:%S %Z")
-        
-        system_msg = f"You are a helpful Discord bot. Current date: {current_date}. Current time: {current_time}. Provide accurate, helpful responses based on available information."
-        
+        current_time = now.strftime("%H:%M:%S UTC")
+
+        system_msg = (
+            f"You are a helpful Discord bot. "
+            f"Current date: {current_date}. Current time: {current_time}. "
+            f"Provide accurate, helpful responses based on available information."
+        )
+
         if memory_cog:
             memory = memory_cog.memory
-            
-            if memory.get('system_prompt'):
-                system_msg = memory.get('system_prompt')
+            if memory.get("system_prompt"):
+                system_msg = memory["system_prompt"]
             else:
                 lines = [
                     f"You are {memory.get('bot_name', 'Tilt-bot')}.",
                     f"Description: {memory.get('bot_description', 'A helpful bot')}",
                     f"Personality: {memory.get('personality', 'helpful and friendly')}",
                     f"Current date: {current_date}",
+                    f"Current time: {current_time}",
                 ]
                 system_msg = "\n".join(lines)
-        
+
         if guild and serverinfo_cog:
             try:
                 guild_info = serverinfo_cog.get_guild_context(guild)
                 system_msg += f"\n\nContext about the current server:\n{guild_info}"
-            except Exception as e:
-                logger.debug(f"Could not get guild context: {e}")
-        
+            except Exception as exc:
+                logger.debug(f"Could not get guild context: {exc}")
+
         return system_msg
 
-    def format_history_for_gemini(self, history: list) -> list:
-        """Convert internal dictionary history to Gemini's content format."""
+    # ─────────────────────────────────────────────────────────────────────────
+    # History helpers
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _format_history_for_gemini(self, history: list) -> list[dict]:
+        """Convert internal history format → Gemini contents list."""
         contents = []
         for msg in history:
             role = "user" if msg["role"] == "user" else "model"
-            contents.append({"role": role, "parts": [msg["content"]]})
+            contents.append({"role": role, "parts": [{"text": msg["content"]}]})
         return contents
 
-    async def get_perplexity_response(self, user_message: str) -> str:
-        """Fallback to Perplexity API when Gemini fails."""
+    async def update_history(
+        self, channel_id: int, user_message: str, ai_response: str
+    ) -> None:
+        """Thread-safe history update using a per-channel asyncio.Lock."""
+        async with self._history_locks[channel_id]:
+            history = self.conversation_history[channel_id]
+            history.append({"role": "user", "content": user_message})
+            history.append({"role": "assistant", "content": ai_response})
+            # Trim to keep memory bounded
+            max_entries = self.max_history * 2
+            if len(history) > max_entries:
+                self.conversation_history[channel_id] = history[-max_entries:]
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Gemini API call with exponential backoff
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def _call_gemini_model(
+        self,
+        model_name: str,
+        contents: list,
+        system_instruction: str,
+    ) -> str:
+        """
+        Single model call using the native async client.aio interface.
+        Retries up to 3 times with exponential backoff on rate-limit errors.
+        Raises on non-retryable errors so the caller can try the next model.
+        """
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = await self._client.aio.models.generate_content(
+                    model=model_name,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                        safety_settings=self.safety_settings,
+                    ),
+                )
+                return response.text
+
+            except ClientError as exc:
+                code = getattr(exc, "status_code", None) or str(exc)
+                code_str = str(code)
+
+                # Rate-limit / quota errors → backoff and retry
+                if "429" in code_str or "RESOURCE_EXHAUSTED" in code_str:
+                    if attempt < max_retries - 1:
+                        wait = min(2 ** attempt + random.uniform(0, 1), MAX_BACKOFF_SECONDS)
+                        logger.warning(
+                            f"⏳ Rate-limited on {model_name} "
+                            f"(attempt {attempt + 1}/{max_retries}), "
+                            f"retrying in {wait:.1f}s..."
+                        )
+                        await asyncio.sleep(wait)
+                        continue
+                    raise  # Exhausted retries — bubble up
+
+                # Non-retryable errors — re-raise immediately
+                raise
+
+        raise RuntimeError(f"Max retries exceeded for {model_name}")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Main response orchestrator
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def get_gemini_response(
+        self,
+        channel_id: int,
+        user_message: str,
+        web_context: str = "",
+        guild: discord.Guild | None = None,
+    ) -> str:
+        """Try each Gemini model in order; fall back to Perplexity if all fail."""
+        if not self._client:
+            return "❌ Gemini client is not initialised (missing API key or package)."
+
+        system_instruction = self.build_system_message(guild)
+
+        # Snapshot history safely (no lock needed for reads here — Python GIL)
+        history = list(self.conversation_history.get(channel_id, []))
+        formatted_history = self._format_history_for_gemini(history)
+
+        # Build the final user turn (inject web context if available)
+        if web_context:
+            final_user_text = (
+                f"**Information from web search:**\n{web_context}\n\n"
+                f"**User Query:** {user_message}"
+            )
+        else:
+            final_user_text = user_message
+
+        # Combine history + new turn into a single contents list
+        contents = formatted_history + [
+            {"role": "user", "parts": [{"text": final_user_text}]}
+        ]
+
+        attempted_models: list[str] = []
+
+        for model_name in self.model_list:
+            try:
+                text = await self._call_gemini_model(
+                    model_name, contents, system_instruction
+                )
+                self.model_status[model_name] = "available"
+                logger.info(f"✅ Success with {model_name}")
+                return text
+
+            except ClientError as exc:
+                code_str = str(getattr(exc, "status_code", exc)).lower()
+
+                if "404" in code_str or "not found" in code_str:
+                    self.model_status[model_name] = "not_found"
+                    logger.warning(f"⚠️ Model not found: {model_name}")
+                    attempted_models.append(f"{model_name}(404)")
+
+                elif "429" in code_str or "resource_exhausted" in code_str or "quota" in code_str:
+                    self.model_status[model_name] = "quota_exceeded"
+                    logger.warning(f"⚠️ Quota exhausted for {model_name}")
+                    attempted_models.append(f"{model_name}(quota)")
+
+                elif "503" in code_str or "unavailable" in code_str:
+                    self.model_status[model_name] = "unavailable"
+                    logger.warning(f"⚠️ Service unavailable: {model_name}")
+                    attempted_models.append(f"{model_name}(503)")
+
+                else:
+                    self.model_status[model_name] = "error"
+                    logger.error(f"❌ Unhandled ClientError on {model_name}: {exc}")
+                    attempted_models.append(f"{model_name}(error)")
+
+            except Exception as exc:
+                self.model_status[model_name] = "error"
+                logger.error(f"❌ Unexpected error on {model_name}: {exc}", exc_info=True)
+                attempted_models.append(f"{model_name}(error)")
+
+        # ── All Gemini models failed → Perplexity fallback ────────────────────
+        logger.warning(
+            f"❌ All Gemini models failed ({', '.join(attempted_models)}) "
+            f"— attempting Perplexity fallback..."
+        )
+        perplexity_response = await self.get_perplexity_response(
+            user_message, history=history
+        )
+
+        if perplexity_response:
+            logger.info("✅ Perplexity fallback successful")
+            return f"🌐 **(Via Perplexity AI)**\n\n{perplexity_response}"
+
+        return (
+            "⚠️ **All AI services are currently unavailable.**\n\n"
+            f"Gemini: All models failed — {', '.join(attempted_models)}\n"
+            f"Perplexity: Failed or not configured.\n\n"
+            "Please try again later."
+        )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Perplexity fallback
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def get_perplexity_response(
+        self, user_message: str, history: list | None = None
+    ) -> str | None:
+        """
+        Fallback to Perplexity sonar API.
+        Passes up to the last 3 conversation turns for context continuity.
+        """
         if not PERPLEXITY_API_KEY:
-            logger.warning("⚠️ PERPLEXITY_API_KEY not configured - cannot use fallback")
+            logger.warning("⚠️ PERPLEXITY_API_KEY not configured — cannot use fallback")
             return None
-        
+
         try:
-            logger.info(f"🔄 Falling back to Perplexity API...")
-            
+            logger.info("🔄 Falling back to Perplexity API...")
+
+            # Build messages with recent history context (last 3 turns = 6 entries)
+            messages: list[dict] = []
+            if history:
+                for msg in history[-6:]:
+                    role = "user" if msg["role"] == "user" else "assistant"
+                    messages.append({"role": role, "content": msg["content"]})
+            messages.append({"role": "user", "content": user_message})
+
             async with aiohttp.ClientSession() as session:
                 headers = {
                     "Authorization": f"Bearer {PERPLEXITY_API_KEY}",
-                    "Content-Type": "application/json"
+                    "Content-Type": "application/json",
                 }
-                
                 payload = {
                     "model": "sonar",
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": user_message
-                        }
-                    ]
+                    "messages": messages,
                 }
-                
+
                 async with session.post(
                     "https://api.perplexity.ai/chat/completions",
                     json=payload,
                     headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=30)
-                ) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                        
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        content = (
+                            data.get("choices", [{}])[0]
+                            .get("message", {})
+                            .get("content", "")
+                        )
                         if content:
-                            logger.info(f"✅ Perplexity API returned response")
+                            logger.info("✅ Perplexity API returned response")
                             return content
-                        else:
-                            logger.warning("Perplexity API returned empty content")
-                            return None
-                    else:
-                        logger.error(f"Perplexity API error: {response.status}")
+                        logger.warning("Perplexity API returned empty content")
                         return None
-        
+                    else:
+                        body = await resp.text()
+                        logger.error(f"Perplexity API error {resp.status}: {body[:200]}")
+                        return None
+
         except asyncio.TimeoutError:
             logger.error("Perplexity API timeout")
             return None
-        except Exception as e:
-            logger.error(f"Perplexity API error: {e}")
+        except Exception as exc:
+            logger.error(f"Perplexity API error: {exc}")
             return None
 
-    async def get_gemini_response(self, channel_id: int, user_message: str, web_context: str = "", guild: discord.Guild = None) -> str:
-        """Get response from Gemini API with Perplexity fallback."""
-        if not GEMINI_API_KEY:
-            return "❌ Gemini API Key is missing."
+    # ─────────────────────────────────────────────────────────────────────────
+    # Utility: safe Discord chunking
+    # ─────────────────────────────────────────────────────────────────────────
 
-        system_instruction = self.build_system_message(guild)
-        
-        # FIX: Use .get() to safely retrieve history, preventing KeyError
-        history = self.conversation_history.get(channel_id, [])
-        formatted_history = self.format_history_for_gemini(history)
+    @staticmethod
+    def _chunk_response(text: str, header: str = "") -> list[str]:
+        """
+        Split a long response into Discord-safe chunks.
+        The header (e.g. '**You:** prompt\\n\\n') is prepended only to the first
+        chunk, and its length is accounted for so we never exceed the limit.
+        """
+        chunks: list[str] = []
+        limit = DISCORD_MSG_LIMIT
 
-        final_prompt = user_message
-        if web_context:
-            final_prompt = f"**Information from web search:**\n{web_context}\n\n**User Query:** {user_message}"
+        if header:
+            first_limit = limit - len(header)
+            if first_limit <= 0:
+                # Header itself is huge — send header alone, then the body
+                chunks.append(header.rstrip())
+                header = ""
+                first_limit = limit
+            chunks.append(header + text[:first_limit])
+            text = text[first_limit:]
 
-        # Try Gemini models in priority order
-        attempted_models = []
-        
-        for model_name in self.model_list:
-            try:
-                # Initialize Model
-                model = genai.GenerativeModel(
-                    model_name=model_name,
-                    system_instruction=system_instruction,
-                    safety_settings=self.safety_settings
-                )
-                
-                # Start chat and generate
-                # Note: We create a fresh chat session for the history + new prompt
-                chat = model.start_chat(history=formatted_history)
-                
-                logger.debug(f"Sending request to {model_name}...")
-                response = await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda: chat.send_message(final_prompt)
-                )
-                
-                # Success! Update status and return
-                self.model_status[model_name] = "available"
-                logger.info(f"✅ Success with {model_name}")
-                return response.text
+        for i in range(0, len(text), limit):
+            chunks.append(text[i: i + limit])
 
-            except google_exceptions.ResourceExhausted:
-                self.model_status[model_name] = "quota_exceeded"
-                logger.warning(f"⚠️ Quota exceeded for {model_name}. Trying next...")
-                attempted_models.append(f"{model_name} (quota)")
-                continue
+        return [c for c in chunks if c]
 
-            except Exception as e:
-                error_str = str(e).lower()
-                
-                # Handle model not found errors
-                if "404" in str(e) or "not found" in error_str:
-                    self.model_status[model_name] = "not_found"
-                    # Only log warning, not full error trace, to keep logs clean
-                    logger.warning(f"⚠️ Model not found/supported: {model_name}")
-                    attempted_models.append(f"{model_name} (404)")
-                    continue
-                
-                # Handle generic quota/rate errors
-                if "429" in str(e) or "quota" in error_str:
-                    self.model_status[model_name] = "quota_exceeded"
-                    logger.warning(f"⚠️ Rate limited on {model_name}")
-                    attempted_models.append(f"{model_name} (rate_limit)")
-                    continue
-                
-                # Handle 503 service unavailable
-                if "503" in str(e) or "unavailable" in error_str:
-                    self.model_status[model_name] = "unavailable"
-                    logger.warning(f"⚠️ Service unavailable for {model_name}")
-                    attempted_models.append(f"{model_name} (503)")
-                    continue
-                
-                logger.error(f"❌ Error with {model_name}: {e}")
-                self.model_status[model_name] = "error"
-                attempted_models.append(f"{model_name} (error)")
-                continue
-
-        # All Gemini models failed - try Perplexity fallback
-        logger.warning(f"❌ All Gemini models failed ({', '.join(attempted_models)}) - attempting Perplexity fallback...")
-        perplexity_response = await self.get_perplexity_response(user_message)
-        
-        if perplexity_response:
-            logger.info("✅ Perplexity fallback successful")
-            return f"🌐 **(Via Perplexity AI)**\n\n{perplexity_response}"
-        else:
-            # Both failed
-            return f"⚠️ **All AI services are currently unavailable.**\n\nGemini Status: All models failed (Quota or 404)\nPerplexity Status: Failed or Not Configured\n\nPlease try again later."
-
-    def update_history(self, channel_id: int, user_message: str, ai_response: str):
-        """Update conversation history."""
-        # FIX: Use .get() to safely retrieve history, preventing KeyError
-        history = self.conversation_history.get(channel_id, [])
-        history.append({"role": "user", "content": user_message})
-        history.append({"role": "assistant", "content": ai_response})
-        
-        # Keep history within limits
-        if len(history) > self.max_history * 2:
-            history = history[-(self.max_history * 2):]
-            
-        # Explicitly update the dictionary key
-        self.conversation_history[channel_id] = history
+    # ─────────────────────────────────────────────────────────────────────────
+    # Slash command: /chat
+    # ─────────────────────────────────────────────────────────────────────────
 
     @app_commands.command(name="chat", description="Chat with Gemini AI (with web search)")
     @app_commands.describe(prompt="Your question")
-    async def chat(self, interaction: discord.Interaction, prompt: str):
-        """Chat command with web search."""
+    async def chat(self, interaction: discord.Interaction, prompt: str) -> None:
+        """Slash command: chat with Gemini."""
         await interaction.response.defer(thinking=True)
 
         try:
             web_context = ""
-            try:
-                # Trigger search only for slightly longer queries
-                if len(prompt) > 8:
-                    logger.info(f"Searching for: {prompt}")
+            if len(prompt) > 8:
+                try:
                     web_context = await get_latest_info(prompt)
-            except Exception as e:
-                logger.warning(f"Web search failed: {e}")
+                except Exception as exc:
+                    logger.warning(f"Web search failed: {exc}")
 
             response_text = await self.get_gemini_response(
                 interaction.channel_id,
                 prompt,
                 web_context=web_context,
-                guild=interaction.guild
+                guild=interaction.guild,
             )
 
-            self.update_history(interaction.channel_id, prompt, response_text)
+            await self.update_history(interaction.channel_id, prompt, response_text)
 
-            # Split response into chunks if too long
-            if len(response_text) > 1900:
-                chunks = [response_text[i:i+1900] for i in range(0, len(response_text), 1900)]
-                await interaction.followup.send(f"**You:** {prompt}\n\n{chunks[0]}")
-                for chunk in chunks[1:]:
-                    await interaction.followup.send(chunk)
-            else:
-                await interaction.followup.send(f"**You:** {prompt}\n\n{response_text}")
+            header = f"**You:** {prompt}\n\n"
+            chunks = self._chunk_response(response_text, header=header)
+            await interaction.followup.send(chunks[0])
+            for chunk in chunks[1:]:
+                await interaction.followup.send(chunk)
 
-        except Exception as e:
-            logger.error(f"Chat error: {e}")
-            await interaction.followup.send(f"Error: {str(e)[:100]}")
+        except Exception as exc:
+            logger.error(f"Chat command error: {exc}", exc_info=True)
+            await interaction.followup.send(f"❌ Error: {str(exc)[:200]}")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Event listener: @mentions
+    # ─────────────────────────────────────────────────────────────────────────
 
     @commands.Cog.listener()
-    async def on_message(self, message: discord.Message):
-        """Handle mentions."""
+    async def on_message(self, message: discord.Message) -> None:
+        """Respond when the bot is @mentioned."""
         if message.author.bot or not self.bot.user.mentioned_in(message):
             return
-
         if message.mention_everyone:
             return
 
         async with message.channel.typing():
-            prompt = message.content.replace(f'<@!{self.bot.user.id}>', '').replace(f'<@{self.bot.user.id}>', '').strip()
-            
+            prompt = (
+                message.content
+                .replace(f"<@!{self.bot.user.id}>", "")
+                .replace(f"<@{self.bot.user.id}>", "")
+                .strip()
+            )
+
             if not prompt:
-                await message.channel.send("Hi! I'm powered by Google Gemini with Perplexity fallback. How can I help?", reference=message)
+                await message.channel.send(
+                    "Hi! I'm powered by Google Gemini with Perplexity fallback. "
+                    "How can I help?",
+                    reference=message,
+                )
                 return
 
             try:
                 web_context = ""
-                try:
-                    if len(prompt.split()) > 3:
+                if len(prompt.split()) > 3:
+                    try:
                         web_context = await get_latest_info(prompt)
-                except Exception as e:
-                    logger.warning(f"Web search failed: {e}")
+                    except Exception as exc:
+                        logger.warning(f"Web search failed: {exc}")
 
                 response_text = await self.get_gemini_response(
                     message.channel.id,
                     prompt,
                     web_context=web_context,
-                    guild=message.guild
+                    guild=message.guild,
                 )
 
-                self.update_history(message.channel.id, prompt, response_text)
+                await self.update_history(message.channel.id, prompt, response_text)
 
-                # Split response into chunks if too long
-                if len(response_text) > 2000:
-                    chunks = [response_text[i:i+1900] for i in range(0, len(response_text), 1900)]
-                    for chunk in chunks:
-                        await message.channel.send(chunk, reference=message)
-                else:
-                    await message.channel.send(response_text, reference=message)
+                chunks = self._chunk_response(response_text)
+                for chunk in chunks:
+                    await message.channel.send(chunk, reference=message)
 
-            except Exception as e:
-                logger.error(f"Mention handler error: {e}", exc_info=True)
-                await message.channel.send(f"Error processing request. Please try again later.", reference=message)
+            except Exception as exc:
+                logger.error(f"Mention handler error: {exc}", exc_info=True)
+                await message.channel.send(
+                    "❌ Error processing request. Please try again later.",
+                    reference=message,
+                )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Slash command: /model-status
+    # ─────────────────────────────────────────────────────────────────────────
 
     @app_commands.command(name="model-status", description="Check Gemini model availability")
-    async def model_status(self, interaction: discord.Interaction):
-        """Check status of all Gemini models."""
+    async def model_status_cmd(self, interaction: discord.Interaction) -> None:
+        """Slash command: show model rotation status."""
         await interaction.response.defer(ephemeral=True)
-        
-        status_msg = "🤖 **Gemini Model Status (Rotation):**\n\n"
-        
-        # Display validated list first
+
+        lines = ["🤖 **Gemini Model Status (Rotation):**\n"]
+
         if not self.model_list:
-             status_msg += "⚠️ No models found in rotation! (Check logs)\n"
-        
-        for model in self.model_list:
-            status = self.model_status.get(model, "unknown")
-            emoji = "✅" if status == "available" else "⚠️" if status == "quota_exceeded" else "❓"
-            status_msg += f"{emoji} `{model}`: {status}\n"
-
-        status_msg += f"\n**Checked Candidates:**\n"
-        for model in self.raw_model_list:
-             if model not in self.model_list:
-                 status_msg += f"❌ `{model}`: Not found/Invalid (Removed)\n"
-
-        status_msg += f"\n🌐 **Perplexity Fallback:** {'✅ Configured' if PERPLEXITY_API_KEY else '❌ Not configured'}"
-        await interaction.followup.send(status_msg)
-
-    @app_commands.command(name="clear-chat", description="Clear conversation history")
-    async def clear_chat(self, interaction: discord.Interaction):
-        """Clear chat history."""
-        channel_id = interaction.channel_id
-        if channel_id in self.conversation_history:
-            del self.conversation_history[channel_id]
-            await interaction.response.send_message("✅ Memory for this channel has been wiped.", ephemeral=True)
+            lines.append("⚠️ No models in rotation! Check logs.")
         else:
-            await interaction.response.send_message("No active conversation history to clear.", ephemeral=True)
+            for model in self.model_list:
+                status = self.model_status.get(model, "unknown")
+                emoji = (
+                    "✅" if status == "available"
+                    else "⚠️" if status == "quota_exceeded"
+                    else "❌" if status in ("not_found", "unavailable")
+                    else "❓"
+                )
+                lines.append(f"{emoji} `{model}`: {status}")
+
+        removed = [m for m in self.raw_model_list if m not in self.model_list]
+        if removed:
+            lines.append("\n**Removed (not found in API):**")
+            for m in removed:
+                lines.append(f"❌ `{m}`")
+
+        perp_status = "✅ Configured" if PERPLEXITY_API_KEY else "❌ Not configured"
+        lines.append(f"\n🌐 **Perplexity Fallback:** {perp_status}")
+
+        await interaction.followup.send("\n".join(lines))
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Slash command: /clear-chat
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @app_commands.command(name="clear-chat", description="Clear conversation history for this channel")
+    async def clear_chat(self, interaction: discord.Interaction) -> None:
+        """Slash command: wipe per-channel conversation history."""
+        channel_id = interaction.channel_id
+        async with self._history_locks[channel_id]:
+            if channel_id in self.conversation_history:
+                del self.conversation_history[channel_id]
+                await interaction.response.send_message(
+                    "✅ Conversation history for this channel has been cleared.",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.response.send_message(
+                    "No active conversation history to clear.",
+                    ephemeral=True,
+                )
 
 
-async def setup(bot: commands.Bot):
-    """Setup cog."""
+async def setup(bot: commands.Bot) -> None:
+    """Load the Gemini cog."""
     await bot.add_cog(Gemini(bot))
