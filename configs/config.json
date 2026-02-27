@@ -1,7 +1,7 @@
 {
     "bot": {
         "name": "Tilt-bot",
-        "version": "1.2.0",
+        "version": "1.2.1",
         "description": "A comprehensive Discord bot providing moderation, utility, AI chat, and server management features.",
         "repository_url": "https://github.com/TiltedBl0ck/Tilt-bot",
         "author": "TiltedBl0ck",

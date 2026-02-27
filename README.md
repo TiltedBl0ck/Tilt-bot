@@ -4,6 +4,28 @@ This repository contains the source code for the Tilt-bot Discord bot.
 
 🚀 Release Notes
 
+v1.2.1 - The "AI SDK & Dependency Hardening" Update
+
+This update migrates the AI layer to the new Google Gen AI SDK and adds startup dependency validation.
+
+✨ New Features & Fixes
+
+SDK Migration: Replaced the deprecated google-generativeai package with the new google-genai[aiohttp] SDK, enabling native async API calls via client.aio.
+
+Exponential Backoff: Gemini model calls now retry up to 3 times with jitter on rate-limit (429) errors before rotating to the next model.
+
+Async History Locks: Per-channel asyncio.Lock prevents race conditions when multiple users message simultaneously in the same channel.
+
+Safety Settings Fix: Removed BLOCK_NONE from HATE_SPEECH and DANGEROUS_CONTENT categories to comply with Discord ToS and Google API policies.
+
+Dependency Preflight: main.py now validates requirements.txt on startup using importlib.metadata. Set AUTO_INSTALL_DEPS=1 to auto-install missing packages.
+
+UTC Timestamps: System prompt now uses datetime.now(timezone.utc) for deterministic timestamps regardless of host timezone.
+
+Fixed Discord Chunking: Response chunking now accounts for header length to prevent messages exceeding the 2000-character Discord limit.
+
+Removed Fake Model: gemini-3-pro-preview was not a real model and has been removed from the rotation list.
+
 v1.2.0 - The "Security & Stability" Update
 
 This critical update addresses several security vulnerabilities and improves the overall stability of the bot.
@@ -112,6 +134,10 @@ With the virtual environment activated, install the required Python packages:
 
 pip install -r requirements.txt
 
+Note: This project uses the new google-genai[aiohttp] SDK. If upgrading from a previous version, remove the old package first:
+
+pip uninstall google-generativeai -y
+
 Configuration
 
 Create an environment file to store your sensitive tokens and keys.
@@ -126,7 +152,11 @@ Edit the newly created .env file and replace the placeholder values with your ac
 
 BOT_TOKEN="YOUR_DISCORD_BOT_TOKEN_HERE"
 GEMINI_API_KEY="YOUR_GOOGLE_AI_STUDIO_KEY"
+PERPLEXITY_API_KEY="YOUR_PERPLEXITY_API_KEY"
 POSTGRES_DSN="postgresql://user:password@localhost/dbname"
+
+Optional: set to 1 to let the bot auto-install missing dependencies on startup
+AUTO_INSTALL_DEPS=0
 
 Running the Bot
 

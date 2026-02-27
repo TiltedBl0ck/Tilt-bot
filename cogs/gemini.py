@@ -422,7 +422,7 @@ class Gemini(commands.Cog):
     def _chunk_response(text: str, header: str = "") -> list[str]:
         """
         Split a long response into Discord-safe chunks.
-        The header (e.g. '**You:** prompt\\n\\n') is prepended only to the first
+        The header (e.g. '**You:** prompt\n\n') is prepended only to the first
         chunk, and its length is accounted for so we never exceed the limit.
         """
         chunks: list[str] = []
