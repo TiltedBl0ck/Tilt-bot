@@ -1,5 +1,6 @@
 import logging
 import random
+import re
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -40,7 +41,23 @@ if not HAS_GENAI:
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 MAX_BACKOFF_SECONDS = 60
-DISCORD_MSG_LIMIT = 1900  # Safe Discord message character limit
+DISCORD_MSG_LIMIT = 1900
+
+# Max characters of a sanitized exception forwarded to Discord users.
+# Keeps internal detail (endpoints, partial keys) out of public channels.
+_MAX_USER_FACING_ERR_LEN = 80
+
+
+def _safe_err(exc: Exception) -> str:
+    """
+    Return a sanitized, user-facing error string.
+    Strips URLs and anything that looks like a long token or API key fragment
+    before the message is sent to a Discord channel.
+    """
+    raw = str(exc)
+    raw = re.sub(r"https?://\S+", "<url>", raw)
+    raw = re.sub(r"[A-Za-z0-9+/=_-]{40,}", "<redacted>", raw)
+    return raw[:_MAX_USER_FACING_ERR_LEN]
 
 
 class Gemini(commands.Cog):
@@ -55,20 +72,17 @@ class Gemini(commands.Cog):
         self._history_locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
         self.max_history = 15
 
-        # ── Model rotation list (confirmed-available models as of Feb 2026) ──
-        # gemini-3-pro-preview is NOT a real model and has been removed.
+        # ── Model rotation list ───────────────────────────────────────────────
         self.raw_model_list: list[str] = [
-            "gemini-2.0-flash",          # Stable, fast, free tier
-            "gemini-2.0-flash-lite",     # Ultra-fast fallback
-            "gemini-1.5-flash",          # Reliable fallback
-            "gemini-1.5-pro",            # Highest intelligence fallback
+            "gemini-2.0-flash",        # Stable, fast, free tier
+            "gemini-2.0-flash-lite",   # Ultra-fast fallback
+            "gemini-1.5-flash",        # Reliable fallback
+            "gemini-1.5-pro",          # Highest intelligence fallback
         ]
         self.model_list: list[str] = list(self.raw_model_list)
         self.model_status: dict[str, str] = {m: "unknown" for m in self.model_list}
 
         # ── Safety settings ───────────────────────────────────────────────────
-        # BLOCK_NONE is removed for HATE_SPEECH and DANGEROUS_CONTENT to comply
-        # with Discord ToS and Google API usage policies.
         self.safety_settings = [
             types.SafetySetting(
                 category="HARM_CATEGORY_HARASSMENT",
@@ -88,14 +102,17 @@ class Gemini(commands.Cog):
             ),
         ]
 
-        # ── Initialise the new SDK async client ───────────────────────────────
         if GEMINI_API_KEY and HAS_GENAI:
             self._client = genai.Client(api_key=GEMINI_API_KEY)
         else:
             self._client = None
 
-        # Validate model availability in the background (non-blocking startup)
-        self.bot.loop.create_task(self.validate_available_models())
+    async def cog_load(self) -> None:
+        """
+        Schedule background tasks here instead of __init__ to avoid the
+        deprecated bot.loop attribute (removed in discord.py v2.4+).
+        """
+        asyncio.ensure_future(self.validate_available_models())
 
     # ─────────────────────────────────────────────────────────────────────────
     # Model validation
@@ -111,14 +128,12 @@ class Gemini(commands.Cog):
 
         logger.info("🔍 Validating available Gemini models...")
         try:
-            # client.aio.models.list() is native async — no thread needed.
             available = [
                 m.name async for m in await self._client.aio.models.list()
             ]
 
             validated: list[str] = []
             for preferred in self.raw_model_list:
-                # API returns names like "models/gemini-2.0-flash"
                 if any(name.endswith(preferred) for name in available):
                     validated.append(preferred)
                     self.model_status[preferred] = "available"
@@ -145,7 +160,6 @@ class Gemini(commands.Cog):
         memory_cog = self.bot.get_cog("Memory")
         serverinfo_cog = self.bot.get_cog("ServerInfo")
 
-        # Always use UTC so the timestamp is deterministic regardless of host TZ
         now = datetime.now(timezone.utc)
         current_date = now.strftime("%A, %B %d, %Y")
         current_time = now.strftime("%H:%M:%S UTC")
@@ -199,7 +213,6 @@ class Gemini(commands.Cog):
             history = self.conversation_history[channel_id]
             history.append({"role": "user", "content": user_message})
             history.append({"role": "assistant", "content": ai_response})
-            # Trim to keep memory bounded
             max_entries = self.max_history * 2
             if len(history) > max_entries:
                 self.conversation_history[channel_id] = history[-max_entries:]
@@ -236,7 +249,6 @@ class Gemini(commands.Cog):
                 code = getattr(exc, "status_code", None) or str(exc)
                 code_str = str(code)
 
-                # Rate-limit / quota errors → backoff and retry
                 if "429" in code_str or "RESOURCE_EXHAUSTED" in code_str:
                     if attempt < max_retries - 1:
                         wait = min(2 ** attempt + random.uniform(0, 1), MAX_BACKOFF_SECONDS)
@@ -247,9 +259,7 @@ class Gemini(commands.Cog):
                         )
                         await asyncio.sleep(wait)
                         continue
-                    raise  # Exhausted retries — bubble up
-
-                # Non-retryable errors — re-raise immediately
+                    raise
                 raise
 
         raise RuntimeError(f"Max retries exceeded for {model_name}")
@@ -270,12 +280,9 @@ class Gemini(commands.Cog):
             return "❌ Gemini client is not initialised (missing API key or package)."
 
         system_instruction = self.build_system_message(guild)
-
-        # Snapshot history safely (no lock needed for reads here — Python GIL)
         history = list(self.conversation_history.get(channel_id, []))
         formatted_history = self._format_history_for_gemini(history)
 
-        # Build the final user turn (inject web context if available)
         if web_context:
             final_user_text = (
                 f"**Information from web search:**\n{web_context}\n\n"
@@ -284,7 +291,6 @@ class Gemini(commands.Cog):
         else:
             final_user_text = user_message
 
-        # Combine history + new turn into a single contents list
         contents = formatted_history + [
             {"role": "user", "parts": [{"text": final_user_text}]}
         ]
@@ -366,7 +372,6 @@ class Gemini(commands.Cog):
         try:
             logger.info("🔄 Falling back to Perplexity API...")
 
-            # Build messages with recent history context (last 3 turns = 6 entries)
             messages: list[dict] = []
             if history:
                 for msg in history[-6:]:
@@ -422,8 +427,8 @@ class Gemini(commands.Cog):
     def _chunk_response(text: str, header: str = "") -> list[str]:
         """
         Split a long response into Discord-safe chunks.
-        The header (e.g. '**You:** prompt\n\n') is prepended only to the first
-        chunk, and its length is accounted for so we never exceed the limit.
+        The header is prepended only to the first chunk, and its length is
+        accounted for so we never exceed the limit.
         """
         chunks: list[str] = []
         limit = DISCORD_MSG_LIMIT
@@ -431,7 +436,6 @@ class Gemini(commands.Cog):
         if header:
             first_limit = limit - len(header)
             if first_limit <= 0:
-                # Header itself is huge — send header alone, then the body
                 chunks.append(header.rstrip())
                 header = ""
                 first_limit = limit
@@ -478,7 +482,8 @@ class Gemini(commands.Cog):
 
         except Exception as exc:
             logger.error(f"Chat command error: {exc}", exc_info=True)
-            await interaction.followup.send(f"❌ Error: {str(exc)[:200]}")
+            # _safe_err strips URLs and long tokens before sending to Discord.
+            await interaction.followup.send(f"❌ An error occurred: {_safe_err(exc)}")
 
     # ─────────────────────────────────────────────────────────────────────────
     # Event listener: @mentions
@@ -510,7 +515,8 @@ class Gemini(commands.Cog):
 
             try:
                 web_context = ""
-                if len(prompt.split()) > 3:
+                # Consistent threshold with /chat (> 8 chars)
+                if len(prompt) > 8:
                     try:
                         web_context = await get_latest_info(prompt)
                     except Exception as exc:
@@ -560,39 +566,4 @@ class Gemini(commands.Cog):
                 )
                 lines.append(f"{emoji} `{model}`: {status}")
 
-        removed = [m for m in self.raw_model_list if m not in self.model_list]
-        if removed:
-            lines.append("\n**Removed (not found in API):**")
-            for m in removed:
-                lines.append(f"❌ `{m}`")
-
-        perp_status = "✅ Configured" if PERPLEXITY_API_KEY else "❌ Not configured"
-        lines.append(f"\n🌐 **Perplexity Fallback:** {perp_status}")
-
-        await interaction.followup.send("\n".join(lines))
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Slash command: /clear-chat
-    # ─────────────────────────────────────────────────────────────────────────
-
-    @app_commands.command(name="clear-chat", description="Clear conversation history for this channel")
-    async def clear_chat(self, interaction: discord.Interaction) -> None:
-        """Slash command: wipe per-channel conversation history."""
-        channel_id = interaction.channel_id
-        async with self._history_locks[channel_id]:
-            if channel_id in self.conversation_history:
-                del self.conversation_history[channel_id]
-                await interaction.response.send_message(
-                    "✅ Conversation history for this channel has been cleared.",
-                    ephemeral=True,
-                )
-            else:
-                await interaction.response.send_message(
-                    "No active conversation history to clear.",
-                    ephemeral=True,
-                )
-
-
-async def setup(bot: commands.Bot) -> None:
-    """Load the Gemini cog."""
-    await bot.add_cog(Gemini(bot))
+        removed 

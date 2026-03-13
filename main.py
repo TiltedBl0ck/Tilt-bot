@@ -9,11 +9,14 @@ from __future__ import annotations
 # If a package is missing or the wrong version, the bot exits with a clear
 # error message instead of throwing a cryptic ImportError later.
 # Set AUTO_INSTALL_DEPS=1 in your .env / environment to auto-install instead.
+# NOTE: AUTO_INSTALL_DEPS will print a clear warning before installing to
+# prevent silent supply-chain attacks via a tampered requirements.txt.
 # ─────────────────────────────────────────────────────────────────────────────
 import os
 import sys
 import subprocess
 from pathlib import Path
+
 
 def _run_pip_install(req_path: Path) -> int:
     """Run pip install -r <req_path> using the current interpreter."""
@@ -22,6 +25,7 @@ def _run_pip_install(req_path: Path) -> int:
         stdout=sys.stdout,
         stderr=sys.stderr,
     )
+
 
 def check_requirements(req_file: str = "requirements.txt") -> None:
     """
@@ -35,6 +39,10 @@ def check_requirements(req_file: str = "requirements.txt") -> None:
       - Extras                e.g. google-genai[aiohttp]>=1.0.0
       - Environment markers   e.g. pywin32>=305; sys_platform == "win32"
       - Comments / blank lines
+
+    Security note: AUTO_INSTALL_DEPS=1 prints a visible warning listing every
+    package it is about to install before running pip. Verify your
+    requirements.txt is trusted before enabling this flag.
     """
     from importlib import metadata as _meta
 
@@ -43,7 +51,6 @@ def check_requirements(req_file: str = "requirements.txt") -> None:
         print(f"[deps] ⚠  requirements file not found: {req_path.resolve()}", file=sys.stderr)
         return
 
-    # Use packaging.requirements for robust parsing when available.
     try:
         from packaging.requirements import Requirement as _Req
         _has_packaging = True
@@ -57,7 +64,6 @@ def check_requirements(req_file: str = "requirements.txt") -> None:
     for raw in req_path.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
 
-        # Skip blanks, comments, and pip options
         if not line or line.startswith("#"):
             continue
         if line.startswith(("-r ", "--requirement", "--index", "--extra-index", "--find-links", "-e ")):
@@ -71,7 +77,6 @@ def check_requirements(req_file: str = "requirements.txt") -> None:
                 unparsed.append(line)
                 continue
 
-            # Skip if environment marker doesn't apply
             if req.marker is not None and not req.marker.evaluate():
                 continue
 
@@ -85,9 +90,7 @@ def check_requirements(req_file: str = "requirements.txt") -> None:
                 incompatible.append(f"{req}  (installed: {installed})")
 
         else:
-            # Minimal fallback: name-only check, no version comparison
             name = line.split(";")[0].strip()
-            # Strip extras and specifiers
             import re as _re
             name = _re.split(r"[\[>=<!~\s]", name)[0].strip()
             if not name:
@@ -98,7 +101,6 @@ def check_requirements(req_file: str = "requirements.txt") -> None:
             except _meta.PackageNotFoundError:
                 missing.append(line)
 
-    # ── All good ──
     if not missing and not incompatible:
         if unparsed:
             print(f"[deps] ✅ OK  ({len(unparsed)} line(s) skipped — pip options or -r includes)")
@@ -106,7 +108,6 @@ def check_requirements(req_file: str = "requirements.txt") -> None:
             print("[deps] ✅ All requirements satisfied.")
         return
 
-    # ── Something's wrong — report it ──
     print("\n[deps] ❌ Dependency check failed:", file=sys.stderr)
     if missing:
         print("\n  Missing packages:", file=sys.stderr)
@@ -119,16 +120,36 @@ def check_requirements(req_file: str = "requirements.txt") -> None:
 
     auto = os.environ.get("AUTO_INSTALL_DEPS", "0").strip() == "1"
     if auto:
-        print("\n[deps] AUTO_INSTALL_DEPS=1 — running pip install ...", file=sys.stderr)
+        # Security: print a clear warning listing what will be installed so the
+        # operator can abort if requirements.txt has been tampered with.
+        all_problem_pkgs = missing + [p.split()[0] for p in incompatible]
+        print(
+            "\n[deps] ⚠️  AUTO_INSTALL_DEPS=1 — about to run pip install for:",
+            file=sys.stderr,
+        )
+        for pkg in all_problem_pkgs:
+            print(f"    • {pkg}", file=sys.stderr)
+        print(
+            "[deps] If you did not expect these packages, abort now (Ctrl+C) "
+            "and inspect requirements.txt before continuing.",
+            file=sys.stderr,
+        )
+        print("[deps] Running pip install in 3 seconds...", file=sys.stderr)
+        import time as _time
+        _time.sleep(3)
+
         code = _run_pip_install(req_path)
         if code != 0:
             print("[deps] pip install failed. Fix manually and retry.", file=sys.stderr)
             raise SystemExit(code)
-        print("[deps] ✅ Dependencies installed. Restarting...", file=sys.stderr)
-        # Re-exec so new packages are importable in this process
-        raise SystemExit(
-            subprocess.call([sys.executable] + sys.argv)
+        print(
+            "[deps] ✅ Dependencies installed. Please restart the bot manually "
+            "to load the new packages.",
+            file=sys.stderr,
         )
+        # Exit cleanly instead of re-executing — avoids silent supply-chain
+        # escalation where a newly-installed malicious package runs immediately.
+        raise SystemExit(0)
 
     print(f"\n[deps] Fix by running:", file=sys.stderr)
     print(f"  {sys.executable} -m pip install -r {req_path}", file=sys.stderr)
@@ -160,8 +181,7 @@ from dotenv import load_dotenv
 import cogs.utils.db as db_utils
 
 # ── Logging Setup ──────────────────────────────────────────────────────────
-# RotatingFileHandler prevents disk exhaustion on long-running bots.
-Path("configs").mkdir(exist_ok=True)  # ensure log dir exists before opening
+Path("configs").mkdir(exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -207,7 +227,6 @@ class TiltBot(commands.Bot):
         """Async setup — db init, cog loading, slash command sync."""
         logger.info("--- Setting up the bot ---")
 
-        # Initialise database first
         try:
             await db_utils.init_db()
             logger.info("Database ready.")
@@ -216,7 +235,6 @@ class TiltBot(commands.Bot):
             await self.close()
             return
 
-        # Load the main handler cog
         try:
             await self.load_extension("cogs.handler")
             logger.info("Handler cog loaded.")
@@ -225,7 +243,6 @@ class TiltBot(commands.Bot):
             await self.close()
             return
 
-        # Sync slash commands
         try:
             synced = await self.tree.sync()
             logger.info(f"Synced {len(synced)} application command(s).")
