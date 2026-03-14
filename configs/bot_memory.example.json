@@ -1,0 +1,9 @@
+{
+    "bot_name": "Tilt-bot",
+    "bot_description": "A custom Discord bot",
+    "personality": "helpful, friendly, and engaging",
+    "owner": "Your team name here",
+    "server_name": "Your server name here",
+    "custom_facts": [],
+    "system_prompt": ""
+}

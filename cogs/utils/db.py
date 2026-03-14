@@ -7,14 +7,18 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
 from contextlib import asynccontextmanager
 
+
 logger = logging.getLogger(__name__)
+
 
 # --- Global Database Connection ---
 _db_connection: Optional[aiosqlite.Connection] = None
 DB_FILE = "database/local.db"
 
+
 # --- Write Serialization Lock ---
 _write_lock = asyncio.Lock()
+
 
 # --- In-Memory Cache ---
 _config_cache: Dict[int, Dict[str, Any]] = {}
@@ -22,7 +26,9 @@ _cache_lock = asyncio.Lock()
 _cache_ttl = 3600
 _cache_timestamps: Dict[int, float] = {}
 
+
 UTC_PLUS_8 = timezone(timedelta(hours=8))
+
 
 # ── Column Whitelists (SQL Injection Prevention) ──────────────────────────────
 VALID_CONFIG_COLUMNS = {
@@ -32,6 +38,7 @@ VALID_CONFIG_COLUMNS = {
     "current_count", "last_counter_id", "ai_chat_enabled", "ai_chat_channel_id",
     "wotd_channel_id", "wotd_timezone", "wotd_hour", "wotd_last_word"
 }
+
 
 VALID_ANNOUNCEMENT_COLUMNS = {
     "channel_id", "message", "frequency", "next_run", "is_active"
@@ -44,9 +51,16 @@ async def init_db() -> bool:
     if _db_connection:
         return True
 
-    os.makedirs(os.path.dirname(DB_FILE), exist_ok=True)
+    os.makedirs(os.path.dirname(DB_FILE), exist_ok=True, mode=0o700)
     try:
         _db_connection = await aiosqlite.connect(DB_FILE)
+
+        # Restrictive permissions for the SQLite file (best effort)
+        try:
+            os.chmod(DB_FILE, 0o600)
+        except OSError as exc:
+            logger.warning(f"Could not set permissions on DB file {DB_FILE}: {exc}")
+
         await _db_connection.execute("PRAGMA journal_mode=WAL;")
         await _db_connection.execute("PRAGMA foreign_keys=ON;")
         await _db_connection.commit()
@@ -103,6 +117,7 @@ async def init_db() -> bool:
                     is_active INTEGER DEFAULT 1
                 );
             """)
+
             await cursor.execute("""
                 CREATE TABLE IF NOT EXISTS details (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -112,9 +127,18 @@ async def init_db() -> bool:
                     FOREIGN KEY(announcement_id) REFERENCES announcements(id) ON DELETE CASCADE
                 );
             """)
+
+            await cursor.execute("""
+                CREATE TABLE IF NOT EXISTS guild_memory (
+                    guild_id INTEGER PRIMARY KEY,
+                    memory_json TEXT NOT NULL
+                );
+            """)
+
             await cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_announcements_server_id ON announcements(server_id)"
             )
+
         await _db_connection.commit()
         logger.info(f"SQLite connection established to {DB_FILE} (WAL Mode enabled).")
         return True
@@ -137,6 +161,42 @@ async def get_db_connection():
     if _db_connection is None:
         raise ConnectionError("DB not initialized. Call init_db() first.")
     yield _db_connection
+
+
+# --- Generic DB Helpers ---
+async def fetchone(query: str, params: tuple = ()) -> Optional[tuple]:
+    """Fetch one row from the database."""
+    try:
+        async with get_db_connection() as conn:
+            async with conn.execute(query, params) as cursor:
+                return await cursor.fetchone()
+    except Exception as e:
+        logger.error(f"fetchone error: {e}")
+        return None
+
+
+async def fetchall(query: str, params: tuple = ()) -> List[tuple]:
+    """Fetch all rows from the database."""
+    try:
+        async with get_db_connection() as conn:
+            async with conn.execute(query, params) as cursor:
+                return await cursor.fetchall()
+    except Exception as e:
+        logger.error(f"fetchall error: {e}")
+        return []
+
+
+async def execute(query: str, params: tuple = ()) -> bool:
+    """Execute a write query safely with serialization."""
+    try:
+        async with _write_lock:
+            async with get_db_connection() as conn:
+                await conn.execute(query, params)
+                await conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"execute error: {e}")
+        return False
 
 
 # --- Config Retrieval ---
@@ -274,7 +334,6 @@ def get_next_run_time(
     """
     now_naive = datetime.now(UTC_PLUS_8).replace(tzinfo=None)
 
-    # FIX: Handle "once" separately to prevent infinite loop
     if frequency == "once":
         return now_naive + timedelta(seconds=1)
 
@@ -341,17 +400,22 @@ async def create_detail(announcement_id, info):
                 )
                 await conn.commit()
         return True
-    except Exception:
+    except Exception as e:
+        logger.error(f"Create detail error: {e}")
         return False
 
 
 async def get_detail(announcement_id):
-    async with get_db_connection() as conn:
-        async with conn.execute(
-            "SELECT info FROM details WHERE announcement_id = ?", (announcement_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
-            return row[0] if row else None
+    try:
+        async with get_db_connection() as conn:
+            async with conn.execute(
+                "SELECT info FROM details WHERE announcement_id = ?", (announcement_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return row[0] if row else None
+    except Exception as e:
+        logger.error(f"Get detail error: {e}")
+        return None
 
 
 async def update_detail(ann_id, info):
@@ -361,101 +425,126 @@ async def update_detail(ann_id, info):
         if exists
         else "INSERT INTO details (info, announcement_id) VALUES (?, ?)"
     )
-    async with _write_lock:
-        async with get_db_connection() as conn:
-            await conn.execute(sql, (info, ann_id))
-            await conn.commit()
+    try:
+        async with _write_lock:
+            async with get_db_connection() as conn:
+                await conn.execute(sql, (info, ann_id))
+                await conn.commit()
+    except Exception as e:
+        logger.error(f"Update detail error: {e}")
 
 
 async def get_due_announcements():
-    now_naive = datetime.now(UTC_PLUS_8).replace(tzinfo=None).isoformat()
-    async with get_db_connection() as conn:
-        async with conn.execute(
-            "SELECT * FROM announcements WHERE is_active = 1 AND next_run <= ?",
-            (now_naive,),
-        ) as cursor:
-            rows = await cursor.fetchall()
-            cols = [d[0] for d in cursor.description]
-            return [
-                dict(zip(cols, [
-                    datetime.fromisoformat(v) if k == "next_run" else v
-                    for k, v in zip(cols, r)
-                ]))
-                for r in rows
-            ]
+    try:
+        now_naive = datetime.now(UTC_PLUS_8).replace(tzinfo=None).isoformat()
+        async with get_db_connection() as conn:
+            async with conn.execute(
+                "SELECT * FROM announcements WHERE is_active = 1 AND next_run <= ?",
+                (now_naive,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                cols = [d[0] for d in cursor.description]
+                return [
+                    dict(zip(cols, [
+                        datetime.fromisoformat(v) if k == "next_run" else v
+                        for k, v in zip(cols, r)
+                    ]))
+                    for r in rows
+                ]
+    except Exception as e:
+        logger.error(f"Get due announcements error: {e}")
+        return []
 
 
 async def update_announcement_next_run(ann_id, frequency):
-    async with get_db_connection() as conn:
-        async with conn.execute(
-            "SELECT next_run FROM announcements WHERE id = ?", (ann_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
-            if not row:
-                return None
-            new_next = get_next_run_time(
-                frequency, anchor_dt=datetime.fromisoformat(row[0])
-            )
-            if new_next:
-                async with _write_lock:
-                    await conn.execute(
-                        "UPDATE announcements SET next_run = ? WHERE id = ?",
-                        (new_next.isoformat(), ann_id),
-                    )
-                    await conn.commit()
-            return new_next
+    try:
+        async with get_db_connection() as conn:
+            async with conn.execute(
+                "SELECT next_run FROM announcements WHERE id = ?", (ann_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                if not row:
+                    return None
+                new_next = get_next_run_time(
+                    frequency, anchor_dt=datetime.fromisoformat(row[0])
+                )
+                if new_next:
+                    async with _write_lock:
+                        await conn.execute(
+                            "UPDATE announcements SET next_run = ? WHERE id = ?",
+                            (new_next.isoformat(), ann_id),
+                        )
+                        await conn.commit()
+                return new_next
+    except Exception as e:
+        logger.error(f"Update next run error: {e}")
+        return None
 
 
 async def get_announcement(ann_id, server_id):
-    async with get_db_connection() as conn:
-        async with conn.execute(
-            "SELECT * FROM announcements WHERE id = ? AND server_id = ?",
-            (ann_id, server_id),
-        ) as cursor:
-            row = await cursor.fetchone()
-            if row:
-                cols = [d[0] for d in cursor.description]
-                data = dict(zip(cols, row))
-                data["next_run"] = datetime.fromisoformat(data["next_run"])
-                return data
+    try:
+        async with get_db_connection() as conn:
+            async with conn.execute(
+                "SELECT * FROM announcements WHERE id = ? AND server_id = ?",
+                (ann_id, server_id),
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    cols = [d[0] for d in cursor.description]
+                    data = dict(zip(cols, row))
+                    data["next_run"] = datetime.fromisoformat(data["next_run"])
+                    return data
+    except Exception as e:
+        logger.error(f"Get announcement error: {e}")
     return None
 
 
 async def get_announcements_by_server(server_id):
-    async with get_db_connection() as conn:
-        async with conn.execute(
-            "SELECT * FROM announcements WHERE server_id = ? AND is_active = 1",
-            (server_id,),
-        ) as cursor:
-            rows = await cursor.fetchall()
-            cols = [d[0] for d in cursor.description]
-            return [
-                dict(zip(cols, [
-                    datetime.fromisoformat(v) if k == "next_run" else v
-                    for k, v in zip(cols, r)
-                ]))
-                for r in rows
-            ]
+    try:
+        async with get_db_connection() as conn:
+            async with conn.execute(
+                "SELECT * FROM announcements WHERE server_id = ? AND is_active = 1",
+                (server_id,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                cols = [d[0] for d in cursor.description]
+                return [
+                    dict(zip(cols, [
+                        datetime.fromisoformat(v) if k == "next_run" else v
+                        for k, v in zip(cols, r)
+                    ]))
+                    for r in rows
+                ]
+    except Exception as e:
+        logger.error(f"Get announcements by server error: {e}")
+        return []
 
 
 async def stop_announcement(ann_id, server_id):
-    async with _write_lock:
-        async with get_db_connection() as conn:
-            await conn.execute(
-                "UPDATE announcements SET is_active = 0 WHERE id = ? AND server_id = ?",
-                (ann_id, server_id),
-            )
-            await conn.commit()
-    return True
+    try:
+        async with _write_lock:
+            async with get_db_connection() as conn:
+                await conn.execute(
+                    "UPDATE announcements SET is_active = 0 WHERE id = ? AND server_id = ?",
+                    (ann_id, server_id),
+                )
+                await conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Stop announcement error: {e}")
+        return False
 
 
 async def mark_announcement_inactive(ann_id):
-    async with _write_lock:
-        async with get_db_connection() as conn:
-            await conn.execute(
-                "UPDATE announcements SET is_active = 0 WHERE id = ?", (ann_id,)
-            )
-            await conn.commit()
+    try:
+        async with _write_lock:
+            async with get_db_connection() as conn:
+                await conn.execute(
+                    "UPDATE announcements SET is_active = 0 WHERE id = ?", (ann_id,)
+                )
+                await conn.commit()
+    except Exception as e:
+        logger.error(f"Mark inactive error: {e}")
 
 
 async def update_announcement_details(ann_id, server_id, updates):
@@ -477,8 +566,12 @@ async def update_announcement_details(ann_id, server_id, updates):
         f"UPDATE announcements SET {', '.join([f'{c} = ?' for c in cols])} "
         f"WHERE id = ? AND server_id = ?"
     )
-    async with _write_lock:
-        async with get_db_connection() as conn:
-            await conn.execute(sql, list(updates.values()) + [ann_id, server_id])
-            await conn.commit()
-    return True
+    try:
+        async with _write_lock:
+            async with get_db_connection() as conn:
+                await conn.execute(sql, list(updates.values()) + [ann_id, server_id])
+                await conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Update announcement details error: {e}")
+        return False

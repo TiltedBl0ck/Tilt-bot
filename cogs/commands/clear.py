@@ -1,114 +1,126 @@
+import asyncio
 import logging
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-
 logger = logging.getLogger(__name__)
 
+MAX_CLEAR = 100
 
-class ClearCommand(commands.Cog):
-    """A command for bulk-deleting messages in a channel."""
+
+class Clear(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    async def count_autocomplete(
+    @app_commands.command(name="clear", description="Delete recent messages in this channel")
+    @app_commands.describe(
+        count="How many recent messages to check/delete (1-100)",
+        user="Optional: only delete messages from this user"
+    )
+    @app_commands.checks.has_permissions(manage_messages=True)
+    async def clear(
         self,
         interaction: discord.Interaction,
-        current: str,
-    ) -> list[app_commands.Choice[int]]:
-        """Autocomplete for the count parameter."""
-        choices = [
-            app_commands.Choice(name="5 messages", value=5),
-            app_commands.Choice(name="10 messages", value=10),
-            app_commands.Choice(name="25 messages", value=25),
-            app_commands.Choice(name="50 messages", value=50),
-            app_commands.Choice(name="100 messages", value=100),
-        ]
-        
-        return [choice for choice in choices if str(choice.value) in current or current in choice.name.lower()]
+        count: app_commands.Range[int, 1, MAX_CLEAR],
+        user: discord.Member | None = None,
+    ):
+        await interaction.response.defer(ephemeral=True, thinking=True)
 
-    @app_commands.autocomplete(count=count_autocomplete)
-    @app_commands.command(name="clear", description="Clear a specified number of recent messages.")
-    @app_commands.describe(count="Number of messages to delete (between 1 and 100).")
-    async def clear(self, interaction: discord.Interaction, count: int) -> None:
-        """Deletes only bot messages after performing checks."""
-        if interaction.guild:
-            # This is a server channel
-            if not interaction.user.guild_permissions.manage_messages:
+        channel = interaction.channel
+        if channel is None:
+            await interaction.followup.send("❌ Channel not found.", ephemeral=True)
+            return
+
+        # DM behavior: bot can only delete its own messages in DMs
+        if interaction.guild is None:
+            deleted = 0
+            checked = 0
+
+            async for message in channel.history(limit=count):
+                checked += 1
+                if message.author.id == self.bot.user.id:
+                    try:
+                        await message.delete()
+                        deleted += 1
+                        await asyncio.sleep(0.3)
+                    except discord.HTTPException:
+                        continue
+
+            await interaction.followup.send(
+                f"✅ Deleted {deleted} bot message(s) from this DM out of {checked} checked.\n"
+                f"ℹ️ Discord does not allow bots to delete other users' DM messages.",
+                ephemeral=True,
+            )
+            return
+
+        me = interaction.guild.me
+        if me is None:
+            await interaction.followup.send("❌ Could not verify bot permissions.", ephemeral=True)
+            return
+
+        perms = channel.permissions_for(me)
+        if not perms.manage_messages or not perms.read_message_history:
+            await interaction.followup.send(
+                "❌ I need both **Manage Messages** and **Read Message History** in this channel.",
+                ephemeral=True,
+            )
+            return
+
+        def check(message: discord.Message) -> bool:
+            if user is None:
+                return True
+            return message.author.id == user.id
+
+        try:
+            # +1 so the slash-command invocation context isn't relevant, but the scan is a bit more forgiving
+            deleted_messages = await channel.purge(limit=count, check=check)
+            deleted_count = len(deleted_messages)
+
+            if user is None:
+                await interaction.followup.send(
+                    f"✅ Deleted {deleted_count} message(s) from this channel.",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.followup.send(
+                    f"✅ Deleted {deleted_count} message(s) from {user.mention}.",
+                    ephemeral=True,
+                )
+
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "❌ I don't have permission to delete messages here.",
+                ephemeral=True,
+            )
+        except discord.HTTPException as exc:
+            logger.error(f"Clear command failed: {exc}", exc_info=True)
+            await interaction.followup.send(
+                "❌ Failed to delete messages. Discord may reject some older messages from bulk deletion.",
+                ephemeral=True,
+            )
+
+    @clear.error
+    async def clear_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if isinstance(error, app_commands.MissingPermissions):
+            if interaction.response.is_done():
+                await interaction.followup.send(
+                    "❌ You need **Manage Messages** to use this command.",
+                    ephemeral=True,
+                )
+            else:
                 await interaction.response.send_message(
-                    "❌ You don't have the `Manage Messages` permission to do this.",
-                    ephemeral=True
+                    "❌ You need **Manage Messages** to use this command.",
+                    ephemeral=True,
                 )
-                return
+            return
 
-            if not 1 <= count <= 100:
-                await interaction.response.send_message(
-                    "❌ Count must be between 1 and 100.",
-                    ephemeral=True
-                )
-                return
-
-            await interaction.response.defer(ephemeral=True)
-            try:
-                deleted = await interaction.channel.purge(
-                    limit=count,
-                    check=lambda message: message.author == self.bot.user
-                )
-                await interaction.followup.send(
-                    f"✅ Successfully deleted {len(deleted)} of my messages.",
-                    ephemeral=True
-                )
-                logger.info(
-                    f"{interaction.user} cleared {len(deleted)} bot messages in "
-                    f"#{interaction.channel} ({interaction.guild.name})."
-                )
-            except discord.Forbidden:
-                await interaction.followup.send(
-                    "❌ I don't have the `Manage Messages` permission to do this.",
-                    ephemeral=True
-                )
-            except discord.HTTPException as e:
-                # Fix: Handle messages older than 14 days error (Error Code 50034)
-                if e.code == 50034:
-                     await interaction.followup.send("❌ I can't bulk delete messages older than 14 days due to Discord limitations.", ephemeral=True)
-                else:
-                     logger.error(f"API Error in clear command: {e}")
-                     await interaction.followup.send("❌ An API error occurred.", ephemeral=True)
-            except Exception as e:
-                logger.error(f"Error in clear command: {e}")
-                await interaction.followup.send(
-                    "❌ An error occurred while trying to clear messages.",
-                    ephemeral=True
-                )
+        logger.error(f"Unhandled clear command error: {error}", exc_info=True)
+        if interaction.response.is_done():
+            await interaction.followup.send("❌ An unexpected error occurred.", ephemeral=True)
         else:
-            # This is a DM
-            await interaction.response.defer(ephemeral=True)
-            try:
-                deleted_count = 0
-                async for message in interaction.channel.history(limit=None):
-                    if message.author == self.bot.user:
-                        try:
-                            await message.delete()
-                            deleted_count += 1
-                        except discord.NotFound:
-                            continue
-
-                await interaction.followup.send(
-                    f"✅ Successfully deleted {deleted_count} of my messages in this DM.",
-                    ephemeral=True
-                )
-                logger.info(
-                    f"{interaction.user} cleared {deleted_count} of the bot's messages in a DM."
-                )
-            except Exception as e:
-                logger.error(f"Error in clear command (DM): {e}")
-                await interaction.followup.send(
-                    "❌ An error occurred while trying to clear messages in this DM.",
-                    ephemeral=True
-                )
+            await interaction.response.send_message("❌ An unexpected error occurred.", ephemeral=True)
 
 
-async def setup(bot: commands.Bot) -> None:
-    """The setup function to add this cog to the bot."""
-    await bot.add_cog(ClearCommand(bot))
+async def setup(bot: commands.Bot):
+    await bot.add_cog(Clear(bot))

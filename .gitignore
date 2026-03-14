@@ -22,3 +22,10 @@ test.zip
 main.zip
 .versions
 1.2.0.zip
+# .gitignore additions for VULN-16 fix
+
+# Add this line to your existing .gitignore file:
+configs/bot_memory.json
+
+# This prevents the runtime memory file from being committed to the repository
+# Use configs/bot_memory.example.json as the template instead
