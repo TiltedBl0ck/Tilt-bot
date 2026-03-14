@@ -10,9 +10,6 @@ from collections import defaultdict
 from datetime import datetime, timezone
 import aiohttp
 
-# --- NEW SDK (google-genai) ---
-# Install: pip install google-genai[aiohttp]
-# Replaces the deprecated google-generativeai package.
 try:
     from google import genai
     from google.genai import types
@@ -20,7 +17,7 @@ try:
     HAS_GENAI = True
 except ImportError:
     HAS_GENAI = False
-    ClientError = Exception  # fallback so except clauses don't crash
+    ClientError = Exception
 
 from cogs.utils.web_search import get_latest_info
 
@@ -43,17 +40,11 @@ if not HAS_GENAI:
 MAX_BACKOFF_SECONDS = 60
 DISCORD_MSG_LIMIT = 1900
 
-# Max characters of a sanitized exception forwarded to Discord users.
-# Keeps internal detail (endpoints, partial keys) out of public channels.
 _MAX_USER_FACING_ERR_LEN = 80
 
 
 def _safe_err(exc: Exception) -> str:
-    """
-    Return a sanitized, user-facing error string.
-    Strips URLs and anything that looks like a long token or API key fragment
-    before the message is sent to a Discord channel.
-    """
+    """Return sanitized user-facing error string."""
     raw = str(exc)
     raw = re.sub(r"https?://\S+", "<url>", raw)
     raw = re.sub(r"[A-Za-z0-9+/=_-]{40,}", "<redacted>", raw)
@@ -66,23 +57,19 @@ class Gemini(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-        # Per-channel conversation history  {channel_id: [{"role": ..., "content": ...}]}
         self.conversation_history: dict[int, list] = defaultdict(list)
-        # Per-channel asyncio.Lock to prevent race conditions on history
         self._history_locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
         self.max_history = 15
 
-        # ── Model rotation list ───────────────────────────────────────────────
         self.raw_model_list: list[str] = [
-            "gemini-2.0-flash",        # Stable, fast, free tier
-            "gemini-2.0-flash-lite",   # Ultra-fast fallback
-            "gemini-1.5-flash",        # Reliable fallback
-            "gemini-1.5-pro",          # Highest intelligence fallback
+            "gemini-2.0-flash",
+            "gemini-2.0-flash-lite",
+            "gemini-1.5-flash",
+            "gemini-1.5-pro",
         ]
         self.model_list: list[str] = list(self.raw_model_list)
         self.model_status: dict[str, str] = {m: "unknown" for m in self.model_list}
 
-        # ── Safety settings ───────────────────────────────────────────────────
         self.safety_settings = [
             types.SafetySetting(
                 category="HARM_CATEGORY_HARASSMENT",
@@ -109,20 +96,21 @@ class Gemini(commands.Cog):
 
     async def cog_load(self) -> None:
         """
-        Schedule background tasks here instead of __init__ to avoid the
-        deprecated bot.loop attribute (removed in discord.py v2.4+).
+        FIX: Store task reference and add error callback to prevent
+        silent exception swallowing.
         """
-        asyncio.ensure_future(self.validate_available_models())
+        task = asyncio.create_task(self.validate_available_models())
+        task.add_done_callback(
+            lambda t: logger.error(f"Model validation task failed: {t.exception()}")
+            if not t.cancelled() and t.exception()
+            else None
+        )
 
     # ─────────────────────────────────────────────────────────────────────────
     # Model validation
     # ─────────────────────────────────────────────────────────────────────────
 
     async def validate_available_models(self) -> None:
-        """
-        Calls the API to check which models from raw_model_list are actually
-        available. Removes invalid entries so they never cause 404 errors.
-        """
         if not self._client:
             return
 
@@ -156,7 +144,6 @@ class Gemini(commands.Cog):
     # ─────────────────────────────────────────────────────────────────────────
 
     def build_system_message(self, guild: discord.Guild | None = None) -> str:
-        """Compose the system instruction from memory cog + server context."""
         memory_cog = self.bot.get_cog("Memory")
         serverinfo_cog = self.bot.get_cog("ServerInfo")
 
@@ -198,7 +185,6 @@ class Gemini(commands.Cog):
     # ─────────────────────────────────────────────────────────────────────────
 
     def _format_history_for_gemini(self, history: list) -> list[dict]:
-        """Convert internal history format → Gemini contents list."""
         contents = []
         for msg in history:
             role = "user" if msg["role"] == "user" else "model"
@@ -208,7 +194,6 @@ class Gemini(commands.Cog):
     async def update_history(
         self, channel_id: int, user_message: str, ai_response: str
     ) -> None:
-        """Thread-safe history update using a per-channel asyncio.Lock."""
         async with self._history_locks[channel_id]:
             history = self.conversation_history[channel_id]
             history.append({"role": "user", "content": user_message})
@@ -227,11 +212,6 @@ class Gemini(commands.Cog):
         contents: list,
         system_instruction: str,
     ) -> str:
-        """
-        Single model call using the native async client.aio interface.
-        Retries up to 3 times with exponential backoff on rate-limit errors.
-        Raises on non-retryable errors so the caller can try the next model.
-        """
         max_retries = 3
         for attempt in range(max_retries):
             try:
@@ -275,7 +255,6 @@ class Gemini(commands.Cog):
         web_context: str = "",
         guild: discord.Guild | None = None,
     ) -> str:
-        """Try each Gemini model in order; fall back to Perplexity if all fail."""
         if not self._client:
             return "❌ Gemini client is not initialised (missing API key or package)."
 
@@ -334,7 +313,6 @@ class Gemini(commands.Cog):
                 logger.error(f"❌ Unexpected error on {model_name}: {exc}", exc_info=True)
                 attempted_models.append(f"{model_name}(error)")
 
-        # ── All Gemini models failed → Perplexity fallback ────────────────────
         logger.warning(
             f"❌ All Gemini models failed ({', '.join(attempted_models)}) "
             f"— attempting Perplexity fallback..."
@@ -361,10 +339,6 @@ class Gemini(commands.Cog):
     async def get_perplexity_response(
         self, user_message: str, history: list | None = None
     ) -> str | None:
-        """
-        Fallback to Perplexity sonar API.
-        Passes up to the last 3 conversation turns for context continuity.
-        """
         if not PERPLEXITY_API_KEY:
             logger.warning("⚠️ PERPLEXITY_API_KEY not configured — cannot use fallback")
             return None
@@ -425,11 +399,6 @@ class Gemini(commands.Cog):
 
     @staticmethod
     def _chunk_response(text: str, header: str = "") -> list[str]:
-        """
-        Split a long response into Discord-safe chunks.
-        The header is prepended only to the first chunk, and its length is
-        accounted for so we never exceed the limit.
-        """
         chunks: list[str] = []
         limit = DISCORD_MSG_LIMIT
 
@@ -454,7 +423,6 @@ class Gemini(commands.Cog):
     @app_commands.command(name="chat", description="Chat with Gemini AI (with web search)")
     @app_commands.describe(prompt="Your question")
     async def chat(self, interaction: discord.Interaction, prompt: str) -> None:
-        """Slash command: chat with Gemini."""
         await interaction.response.defer(thinking=True)
 
         try:
@@ -482,7 +450,6 @@ class Gemini(commands.Cog):
 
         except Exception as exc:
             logger.error(f"Chat command error: {exc}", exc_info=True)
-            # _safe_err strips URLs and long tokens before sending to Discord.
             await interaction.followup.send(f"❌ An error occurred: {_safe_err(exc)}")
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -491,7 +458,6 @@ class Gemini(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
-        """Respond when the bot is @mentioned."""
         if message.author.bot or not self.bot.user.mentioned_in(message):
             return
         if message.mention_everyone:
@@ -515,7 +481,6 @@ class Gemini(commands.Cog):
 
             try:
                 web_context = ""
-                # Consistent threshold with /chat (> 8 chars)
                 if len(prompt) > 8:
                     try:
                         web_context = await get_latest_info(prompt)
@@ -543,12 +508,11 @@ class Gemini(commands.Cog):
                 )
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Slash command: /model-status
+    # Slash command: /model-status (RESTORED/COMPLETED)
     # ─────────────────────────────────────────────────────────────────────────
 
     @app_commands.command(name="model-status", description="Check Gemini model availability")
     async def model_status_cmd(self, interaction: discord.Interaction) -> None:
-        """Slash command: show model rotation status."""
         await interaction.response.defer(ephemeral=True)
 
         lines = ["🤖 **Gemini Model Status (Rotation):**\n"]
@@ -566,4 +530,17 @@ class Gemini(commands.Cog):
                 )
                 lines.append(f"{emoji} `{model}`: {status}")
 
-        removed 
+        removed = [
+            m for m in self.raw_model_list if m not in self.model_list
+        ]
+        if removed:
+            lines.append("\n🗑️ **Removed from rotation:**")
+            for m in removed:
+                st = self.model_status.get(m, "unknown")
+                lines.append(f"  ❌ `{m}`: {st}")
+
+        await interaction.followup.send("\n".join(lines), ephemeral=True)
+
+
+async def setup(bot: commands.Bot) -> None:
+    await bot.add_cog(Gemini(bot))

@@ -14,8 +14,6 @@ _db_connection: Optional[aiosqlite.Connection] = None
 DB_FILE = "database/local.db"
 
 # --- Write Serialization Lock ---
-# Ensures only one coroutine writes at a time — prevents silent data corruption
-# from concurrent writes on a single aiosqlite connection.
 _write_lock = asyncio.Lock()
 
 # --- In-Memory Cache ---
@@ -27,7 +25,6 @@ _cache_timestamps: Dict[int, float] = {}
 UTC_PLUS_8 = timezone(timedelta(hours=8))
 
 # ── Column Whitelists (SQL Injection Prevention) ──────────────────────────────
-# Only columns listed here may be written. Any key not in the set is rejected.
 VALID_CONFIG_COLUMNS = {
     "welcome_channel_id", "goodbye_channel_id", "welcome_message", "welcome_image",
     "goodbye_message", "goodbye_image", "stats_category_id", "member_count_channel_id",
@@ -43,14 +40,13 @@ VALID_ANNOUNCEMENT_COLUMNS = {
 
 async def init_db() -> bool:
     """Initializes the SQLite database and schema."""
-    global _db_connection, connection
+    global _db_connection
     if _db_connection:
         return True
 
     os.makedirs(os.path.dirname(DB_FILE), exist_ok=True)
     try:
         _db_connection = await aiosqlite.connect(DB_FILE)
-        connection = _db_connection
         await _db_connection.execute("PRAGMA journal_mode=WAL;")
         await _db_connection.execute("PRAGMA foreign_keys=ON;")
         await _db_connection.commit()
@@ -81,8 +77,6 @@ async def init_db() -> bool:
                 );
             """)
 
-            # Schema migrations — failures logged at DEBUG (expected on fresh DBs
-            # where the column already exists from CREATE TABLE above).
             migrations = [
                 "ALTER TABLE guild_config ADD COLUMN wotd_channel_id INTEGER",
                 "ALTER TABLE guild_config ADD COLUMN wotd_timezone TEXT DEFAULT 'UTC'",
@@ -94,7 +88,6 @@ async def init_db() -> bool:
                     await cursor.execute(sql)
                     logger.info(f"Migrated DB: {sql}")
                 except Exception as exc:
-                    # "duplicate column name" is normal after the first run.
                     logger.debug(f"Migration skipped (likely already applied): {sql!r} — {exc}")
 
             await cursor.execute("""
@@ -127,23 +120,22 @@ async def init_db() -> bool:
         return True
     except Exception as e:
         logger.critical(f"DB Init failed: {e}")
-        connection = None
+        _db_connection = None
         return False
 
 
 async def close_pool():
-    global _db_connection, connection
+    global _db_connection
     if _db_connection:
         await _db_connection.close()
         _db_connection = None
-        connection = None
         logger.info("SQLite connection closed.")
 
 
 @asynccontextmanager
 async def get_db_connection():
     if _db_connection is None:
-        raise ConnectionError("DB not initialized.")
+        raise ConnectionError("DB not initialized. Call init_db() first.")
     yield _db_connection
 
 
@@ -156,23 +148,23 @@ async def get_config(guild_id: int) -> Optional[Dict[str, Any]]:
                 return _config_cache[guild_id].copy()
 
     try:
-        async with _db_connection.execute(
-            "SELECT * FROM guild_config WHERE guild_id = ?", (guild_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
-            if row:
-                columns = [d[0] for d in cursor.description]
-                config_dict = dict(zip(columns, row))
-                async with _cache_lock:
-                    _config_cache[guild_id] = config_dict
-                    _cache_timestamps[guild_id] = time.time()
-                return config_dict
+        async with get_db_connection() as conn:
+            async with conn.execute(
+                "SELECT * FROM guild_config WHERE guild_id = ?", (guild_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    columns = [d[0] for d in cursor.description]
+                    config_dict = dict(zip(columns, row))
+                    async with _cache_lock:
+                        _config_cache[guild_id] = config_dict
+                        _cache_timestamps[guild_id] = time.time()
+                    return config_dict
     except Exception as e:
         logger.error(f"Config fetch error: {e}")
     return None
 
 
-# Alias for backward compatibility with older cogs
 get_guild_config = get_config
 
 
@@ -181,7 +173,6 @@ async def set_guild_config_value(guild_id: int, updates: Dict[str, Any]) -> bool
         return False
     updates.pop("guild_id", None)
 
-    # Strict column whitelist — prevents SQL injection via dynamic column names.
     invalid = [k for k in updates if k not in VALID_CONFIG_COLUMNS]
     if invalid:
         logger.error(
@@ -201,8 +192,9 @@ async def set_guild_config_value(guild_id: int, updates: Dict[str, Any]) -> bool
             f"ON CONFLICT(guild_id) DO UPDATE SET {update_set}"
         )
         async with _write_lock:
-            await _db_connection.execute(sql, values)
-            await _db_connection.commit()
+            async with get_db_connection() as conn:
+                await conn.execute(sql, values)
+                await conn.commit()
         async with _cache_lock:
             _config_cache.pop(guild_id, None)
         return True
@@ -213,7 +205,6 @@ async def set_guild_config_value(guild_id: int, updates: Dict[str, Any]) -> bool
 
 # --- Counting Game Specifics ---
 async def update_counting_stats(guild_id: int, count: int, user_id: Optional[int]) -> bool:
-    """Simple helper for the counting game (non-atomic)."""
     return await set_guild_config_value(
         guild_id, {"current_count": count, "last_counter_id": user_id}
     )
@@ -222,11 +213,6 @@ async def update_counting_stats(guild_id: int, count: int, user_id: Optional[int
 async def attempt_counting_update(
     guild_id: int, expected_current: int, new_count: int, user_id: int
 ) -> bool:
-    """
-    Atomic update for counting game.
-    Only updates if current_count matches expected_current.
-    Returns True if successful, False if race condition occurred.
-    """
     sql = """
         UPDATE guild_config
         SET current_count = ?, last_counter_id = ?
@@ -234,11 +220,12 @@ async def attempt_counting_update(
     """
     try:
         async with _write_lock:
-            async with _db_connection.execute(
-                sql, (new_count, user_id, guild_id, expected_current)
-            ) as cursor:
-                await _db_connection.commit()
-                success = cursor.rowcount > 0
+            async with get_db_connection() as conn:
+                async with conn.execute(
+                    sql, (new_count, user_id, guild_id, expected_current)
+                ) as cursor:
+                    await conn.commit()
+                    success = cursor.rowcount > 0
         if success:
             async with _cache_lock:
                 _config_cache.pop(guild_id, None)
@@ -250,30 +237,29 @@ async def attempt_counting_update(
 
 # --- WOTD Specifics ---
 async def get_wotd_configs() -> List[Dict[str, Any]]:
-    """Fetches all guilds that have WOTD enabled with scheduling info."""
     try:
-        async with _db_connection.execute(
-            "SELECT guild_id, wotd_channel_id, wotd_timezone, wotd_hour, wotd_last_word "
-            "FROM guild_config WHERE wotd_channel_id IS NOT NULL"
-        ) as cursor:
-            rows = await cursor.fetchall()
-            return [
-                {
-                    "guild_id": r[0],
-                    "wotd_channel_id": r[1],
-                    "wotd_timezone": r[2] or "UTC",
-                    "wotd_hour": r[3] if r[3] is not None else 8,
-                    "wotd_last_word": r[4],
-                }
-                for r in rows
-            ]
+        async with get_db_connection() as conn:
+            async with conn.execute(
+                "SELECT guild_id, wotd_channel_id, wotd_timezone, wotd_hour, wotd_last_word "
+                "FROM guild_config WHERE wotd_channel_id IS NOT NULL"
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [
+                    {
+                        "guild_id": r[0],
+                        "wotd_channel_id": r[1],
+                        "wotd_timezone": r[2] or "UTC",
+                        "wotd_hour": r[3] if r[3] is not None else 8,
+                        "wotd_last_word": r[4],
+                    }
+                    for r in rows
+                ]
     except Exception as e:
         logger.error(f"Error fetching WOTD configs: {e}")
         return []
 
 
 async def update_guild_wotd_word(guild_id: int, word: str) -> bool:
-    """Updates the last sent WOTD for a specific guild."""
     return await set_guild_config_value(guild_id, {"wotd_last_word": word})
 
 
@@ -281,8 +267,18 @@ async def update_guild_wotd_word(guild_id: int, word: str) -> bool:
 def get_next_run_time(
     frequency: str, anchor_dt: Optional[datetime] = None
 ) -> Optional[datetime]:
+    """
+    Calculate next run time for an announcement.
+    FIX: 'once' frequency now returns immediate execution time instead of
+    causing infinite loop with timedelta(seconds=0).
+    """
+    now_naive = datetime.now(UTC_PLUS_8).replace(tzinfo=None)
+
+    # FIX: Handle "once" separately to prevent infinite loop
+    if frequency == "once":
+        return now_naive + timedelta(seconds=1)
+
     freq_map = {
-        "once": timedelta(seconds=0),
         "1min": timedelta(minutes=1),
         "3min": timedelta(minutes=3),
         "5min": timedelta(minutes=5),
@@ -302,7 +298,7 @@ def get_next_run_time(
     delta = freq_map.get(frequency)
     if delta is None:
         return None
-    now_naive = datetime.now(UTC_PLUS_8).replace(tzinfo=None)
+
     next_run = anchor_dt if anchor_dt else now_naive
     while next_run <= now_naive:
         next_run += delta
@@ -321,14 +317,15 @@ async def create_announcement(
         return None
     try:
         async with _write_lock:
-            cursor = await _db_connection.execute(
-                "INSERT INTO announcements "
-                "(server_id, channel_id, message, frequency, next_run, created_by) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (server_id, channel_id, message, frequency, next_run.isoformat(), created_by),
-            )
-            await _db_connection.commit()
-            return cursor.lastrowid
+            async with get_db_connection() as conn:
+                cursor = await conn.execute(
+                    "INSERT INTO announcements "
+                    "(server_id, channel_id, message, frequency, next_run, created_by) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (server_id, channel_id, message, frequency, next_run.isoformat(), created_by),
+                )
+                await conn.commit()
+                return cursor.lastrowid
     except Exception as e:
         logger.error(f"Create ann error: {e}")
         return None
@@ -337,22 +334,24 @@ async def create_announcement(
 async def create_detail(announcement_id, info):
     try:
         async with _write_lock:
-            await _db_connection.execute(
-                "INSERT INTO details (announcement_id, info) VALUES (?, ?)",
-                (announcement_id, info),
-            )
-            await _db_connection.commit()
+            async with get_db_connection() as conn:
+                await conn.execute(
+                    "INSERT INTO details (announcement_id, info) VALUES (?, ?)",
+                    (announcement_id, info),
+                )
+                await conn.commit()
         return True
     except Exception:
         return False
 
 
 async def get_detail(announcement_id):
-    async with _db_connection.execute(
-        "SELECT info FROM details WHERE announcement_id = ?", (announcement_id,)
-    ) as cursor:
-        row = await cursor.fetchone()
-        return row[0] if row else None
+    async with get_db_connection() as conn:
+        async with conn.execute(
+            "SELECT info FROM details WHERE announcement_id = ?", (announcement_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else None
 
 
 async def update_detail(ann_id, info):
@@ -363,105 +362,106 @@ async def update_detail(ann_id, info):
         else "INSERT INTO details (info, announcement_id) VALUES (?, ?)"
     )
     async with _write_lock:
-        await _db_connection.execute(sql, (info, ann_id))
-        await _db_connection.commit()
+        async with get_db_connection() as conn:
+            await conn.execute(sql, (info, ann_id))
+            await conn.commit()
 
 
 async def get_due_announcements():
-    """Returns only announcements whose next_run is due (≤ now). Filter pushed to SQL."""
     now_naive = datetime.now(UTC_PLUS_8).replace(tzinfo=None).isoformat()
-    async with _db_connection.execute(
-        "SELECT * FROM announcements WHERE is_active = 1 AND next_run <= ?",
-        (now_naive,),
-    ) as cursor:
-        rows = await cursor.fetchall()
-        cols = [d[0] for d in cursor.description]
-        return [
-            dict(zip(cols, [
-                datetime.fromisoformat(v) if k == "next_run" else v
-                for k, v in zip(cols, r)
-            ]))
-            for r in rows
-        ]
+    async with get_db_connection() as conn:
+        async with conn.execute(
+            "SELECT * FROM announcements WHERE is_active = 1 AND next_run <= ?",
+            (now_naive,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            cols = [d[0] for d in cursor.description]
+            return [
+                dict(zip(cols, [
+                    datetime.fromisoformat(v) if k == "next_run" else v
+                    for k, v in zip(cols, r)
+                ]))
+                for r in rows
+            ]
 
 
 async def update_announcement_next_run(ann_id, frequency):
-    async with _db_connection.execute(
-        "SELECT next_run FROM announcements WHERE id = ?", (ann_id,)
-    ) as cursor:
-        row = await cursor.fetchone()
-        if not row:
-            return None
-        new_next = get_next_run_time(
-            frequency, anchor_dt=datetime.fromisoformat(row[0])
-        )
-        if new_next:
-            async with _write_lock:
-                await _db_connection.execute(
-                    "UPDATE announcements SET next_run = ? WHERE id = ?",
-                    (new_next.isoformat(), ann_id),
-                )
-                await _db_connection.commit()
-        return new_next
+    async with get_db_connection() as conn:
+        async with conn.execute(
+            "SELECT next_run FROM announcements WHERE id = ?", (ann_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            new_next = get_next_run_time(
+                frequency, anchor_dt=datetime.fromisoformat(row[0])
+            )
+            if new_next:
+                async with _write_lock:
+                    await conn.execute(
+                        "UPDATE announcements SET next_run = ? WHERE id = ?",
+                        (new_next.isoformat(), ann_id),
+                    )
+                    await conn.commit()
+            return new_next
 
 
 async def get_announcement(ann_id, server_id):
-    async with _db_connection.execute(
-        "SELECT * FROM announcements WHERE id = ? AND server_id = ?",
-        (ann_id, server_id),
-    ) as cursor:
-        row = await cursor.fetchone()
-        if row:
-            cols = [d[0] for d in cursor.description]
-            data = dict(zip(cols, row))
-            data["next_run"] = datetime.fromisoformat(data["next_run"])
-            return data
+    async with get_db_connection() as conn:
+        async with conn.execute(
+            "SELECT * FROM announcements WHERE id = ? AND server_id = ?",
+            (ann_id, server_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                cols = [d[0] for d in cursor.description]
+                data = dict(zip(cols, row))
+                data["next_run"] = datetime.fromisoformat(data["next_run"])
+                return data
     return None
 
 
 async def get_announcements_by_server(server_id):
-    async with _db_connection.execute(
-        "SELECT * FROM announcements WHERE server_id = ? AND is_active = 1",
-        (server_id,),
-    ) as cursor:
-        rows = await cursor.fetchall()
-        cols = [d[0] for d in cursor.description]
-        return [
-            dict(zip(cols, [
-                datetime.fromisoformat(v) if k == "next_run" else v
-                for k, v in zip(cols, r)
-            ]))
-            for r in rows
-        ]
+    async with get_db_connection() as conn:
+        async with conn.execute(
+            "SELECT * FROM announcements WHERE server_id = ? AND is_active = 1",
+            (server_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            cols = [d[0] for d in cursor.description]
+            return [
+                dict(zip(cols, [
+                    datetime.fromisoformat(v) if k == "next_run" else v
+                    for k, v in zip(cols, r)
+                ]))
+                for r in rows
+            ]
 
 
 async def stop_announcement(ann_id, server_id):
     async with _write_lock:
-        await _db_connection.execute(
-            "UPDATE announcements SET is_active = 0 WHERE id = ? AND server_id = ?",
-            (ann_id, server_id),
-        )
-        await _db_connection.commit()
+        async with get_db_connection() as conn:
+            await conn.execute(
+                "UPDATE announcements SET is_active = 0 WHERE id = ? AND server_id = ?",
+                (ann_id, server_id),
+            )
+            await conn.commit()
     return True
 
 
 async def mark_announcement_inactive(ann_id):
     async with _write_lock:
-        await _db_connection.execute(
-            "UPDATE announcements SET is_active = 0 WHERE id = ?", (ann_id,)
-        )
-        await _db_connection.commit()
+        async with get_db_connection() as conn:
+            await conn.execute(
+                "UPDATE announcements SET is_active = 0 WHERE id = ?", (ann_id,)
+            )
+            await conn.commit()
 
 
 async def update_announcement_details(ann_id, server_id, updates):
-    """
-    Update specific fields of an announcement.
-    Only columns in VALID_ANNOUNCEMENT_COLUMNS are permitted.
-    """
     if not updates:
         return False
 
-    # Strict column whitelist — prevents SQL injection via dynamic column names.
     invalid_keys = [k for k in updates if k not in VALID_ANNOUNCEMENT_COLUMNS]
     if invalid_keys:
         logger.error(
@@ -478,13 +478,7 @@ async def update_announcement_details(ann_id, server_id, updates):
         f"WHERE id = ? AND server_id = ?"
     )
     async with _write_lock:
-        await _db_connection.execute(sql, list(updates.values()) + [ann_id, server_id])
-        await _db_connection.commit()
+        async with get_db_connection() as conn:
+            await conn.execute(sql, list(updates.values()) + [ann_id, server_id])
+            await conn.commit()
     return True
-
-
-# Backward-compat alias — named 'connection' to clarify this is a single
-# connection, not a pool. Set to _db_connection after init, None otherwise.
-connection = None
-# Legacy alias kept for any cogs that import 'pool' directly.
-pool = None
