@@ -32,7 +32,7 @@ class MemberEvents(commands.Cog):
         logger.debug("Running update_server_stats task.")
         
         # Check if DB is available (using the compatibility shim or connection check)
-        if db_utils.pool is None:
+        if db_utils._db_connection is not None:
             logger.warning("Database not available, skipping server stats update.")
             if self.update_server_stats.is_running():
                 self.update_server_stats.cancel() 
