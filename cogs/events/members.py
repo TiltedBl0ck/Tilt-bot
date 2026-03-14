@@ -13,7 +13,7 @@ class MemberEvents(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         # Start task only if database is initialized
-        if db_utils.pool is not None:
+        if db_utils._db_connection is not None:
              self.update_server_stats.start()
         else:
              logger.warning("Database pool not initialized. Server stats task will not start.")
